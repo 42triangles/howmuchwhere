@@ -1,8 +1,8 @@
+use darling::{util::Flag, Error, FromDeriveInput, FromField, FromVariant};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Field, Fields};
-use darling::{Error, util::Flag, FromDeriveInput, FromField, FromVariant};
 
 // TODO: Maybe collect errors?
 
@@ -12,7 +12,7 @@ macro_rules! darling_unwrap {
             Ok(v) => v,
             Err(e) => return e.write_errors().into(),
         }
-    }
+    };
 }
 
 #[derive(FromDeriveInput, Default)]
@@ -57,17 +57,17 @@ fn derive_fields(
     source: TokenStream2,
     access_prefix: TokenStream2,
     single_unnamed: bool,
-    fields: impl Iterator<Item = (TokenStream2, Field)>
+    fields: impl Iterator<Item = (TokenStream2, Field)>,
 ) -> darling::Result<TokenStream2> {
-    let fields: Vec<TokenStream2> =
-        fields
-            .map(|(name, field)| FieldOpts::from_field(&field).map(|field_opts| {
+    let fields: Vec<TokenStream2> = fields
+        .map(|(name, field)| {
+            FieldOpts::from_field(&field).map(|field_opts| {
                 let field_name = match field_opts.rename {
-                    None if single_unnamed => quote!{ wrapped },
+                    None if single_unnamed => quote! { wrapped },
                     None => name.clone(),
-                    Some(renamed) => quote!{ #renamed },
+                    Some(renamed) => quote! { #renamed },
                 };
-                let field_name = quote!{ stringify!(#field_name) };
+                let field_name = quote! { stringify!(#field_name) };
 
                 enum Mode<'a> {
                     Normal,
@@ -80,11 +80,8 @@ fn derive_fields(
                     },
                 }
 
-                let flag_mode = |flag: &Flag, mode| if flag.is_present() {
-                    Some(mode)
-                } else {
-                    None
-                };
+                let flag_mode =
+                    |flag: &Flag, mode| if flag.is_present() { Some(mode) } else { None };
 
                 let mode = flag_mode(&field_opts.via_size_of_val, Mode::SizeOfVal)
                     .or_else(|| flag_mode(&field_opts.via_size_of, Mode::SizeOf))
@@ -95,78 +92,85 @@ fn derive_fields(
                     .unwrap_or_else(|| Mode::Normal);
 
                 let mode = match field_opts.with {
-                    Some(ref ty) if matches!(mode, Mode::StaticallyKnown) =>
-                        Mode::WithType { ty, statically_known: true },
-                    Some(ref ty) => Mode::WithType { ty, statically_known: false },
+                    Some(ref ty) if matches!(mode, Mode::StaticallyKnown) => Mode::WithType {
+                        ty,
+                        statically_known: true,
+                    },
+                    Some(ref ty) => Mode::WithType {
+                        ty,
+                        statically_known: false,
+                    },
                     None => mode,
                 };
 
-                let access = quote!{ & #access_prefix #name };
+                let access = quote! { & #access_prefix #name };
                 let ty = &field.ty;
 
                 let out = match mode {
-                    Mode::Normal if allow_nonstatic =>
-                        quote!{ .field(#crate_::Inline, #field_name, #access) },
-                    Mode::Normal => quote!{
+                    Mode::Normal if allow_nonstatic => {
+                        quote! { .field(#crate_::Inline, #field_name, #access) }
+                    }
+                    Mode::Normal => quote! {
                         .field_statically_known::<#ty>(#crate_::Inline, #field_name)
                     },
-                    Mode::SizeOfVal if allow_nonstatic =>
-                        quote!{ .field_size_of_val(#crate_::Inline, #field_name, #access) },
-                    Mode::SizeOf => quote!{
+                    Mode::SizeOfVal if allow_nonstatic => {
+                        quote! { .field_size_of_val(#crate_::Inline, #field_name, #access) }
+                    }
+                    Mode::SizeOf => quote! {
                         .field_const_size(#field_name, ::core::mem::size_of::<#ty>(), 0)
                     },
-                    Mode::StaticallyKnown => quote!{
+                    Mode::StaticallyKnown => quote! {
                         .field_statically_known::<#ty>(#crate_::Inline, #field_name)
                     },
-                    Mode::WithType { ty, statically_known } if statically_known || !allow_nonstatic => {
-                        quote!{ .field_statically_known::<#ty>(#crate_::Inline, #field_name) }
-                    },
+                    Mode::WithType {
+                        ty,
+                        statically_known,
+                    } if statically_known || !allow_nonstatic => {
+                        quote! { .field_statically_known::<#ty>(#crate_::Inline, #field_name) }
+                    }
                     Mode::WithType { ty, .. } => {
                         let access = if field_opts.copy.is_present() {
-                            quote!{ *#access }
+                            quote! { *#access }
                         } else if field_opts.clone.is_present() {
-                            quote!{ #access.clone() }
+                            quote! { #access.clone() }
                         } else {
-                            quote!{ #access }
+                            quote! { #access }
                         };
 
                         let convert = match field_opts.constructor {
-                            Some(path) => quote!{ <#ty>::#path(#access) },
-                            None => quote!{ <#ty as ::core::convert::From<_>>::from(#access) },
+                            Some(path) => quote! { <#ty>::#path(#access) },
+                            None => quote! { <#ty as ::core::convert::From<_>>::from(#access) },
                         };
 
                         let convert = if field_opts.unsafe_.is_present() {
-                            quote!{ unsafe { #convert } }
+                            quote! { unsafe { #convert } }
                         } else {
                             convert
                         };
 
-                        quote!{ .field(#crate_::Inline, #field_name, &#convert) }
-                    },
+                        quote! { .field(#crate_::Inline, #field_name, &#convert) }
+                    }
                     _ => {
-                        return Error::custom(
-                            "Cannot be used in a statically known only context"
-                        )
+                        return Error::custom("Cannot be used in a statically known only context")
                             .with_span(&field)
                             .write_errors()
                             .into();
-                    },
+                    }
                 };
 
                 match field_opts.category {
                     None => out,
-                    Some(category) => quote!{
+                    Some(category) => quote! {
                         .category(stringify!(#category), |c| c #out.end_ref())
                     },
                 }
-            }))
-            .collect::<Result<_, _>>()?;
+            })
+        })
+        .collect::<Result<_, _>>()?;
 
-    Ok(
-        quote!{
-            #source #(#fields)*;
-        }
-    )
+    Ok(quote! {
+        #source #(#fields)*;
+    })
 }
 
 fn derive_inner(
@@ -180,46 +184,55 @@ fn derive_inner(
 
     let ident = item.ident;
     let crate_ = if opts.__hmw_internal_use.is_present() {
-        quote!{ crate }
+        quote! { crate }
     } else {
-        quote!{ ::howmuchwhere }
+        quote! { ::howmuchwhere }
     };
 
-    let collector = quote!{ collector };
+    let collector = quote! { collector };
 
-    let opaque_impl = || quote!{
-        collector.collect_in_manual_struct::<Self>()
-            .field_const_size("data", ::core::mem::size_of::<Self>(), 0);
-    };
-
-    let struct_impl = |source, access_prefix, fields| {
-
-        match fields {
-            Fields::Named(named) => derive_fields(
-                &crate_,
-                &opts,
-                allow_nonstatic,
-                source,
-                access_prefix,
-                false,
-                named.named.into_iter()
-                    .map(|mut f| {
-                        let ident = f.ident.take();
-                        (quote!{ #ident }, f)
-                    })
-            ),
-            Fields::Unnamed(unnamed) => derive_fields(
-                &crate_,
-                &opts,
-                allow_nonstatic,
-                source,
-                access_prefix,
-                unnamed.unnamed.len() == 1,
-                unnamed.unnamed.into_iter().enumerate().map(|(i, f)| (format!("{i}").parse().unwrap(), f))
-            ),
-            Fields::Unit =>
-                derive_fields(&crate_, &opts, allow_nonstatic, source, access_prefix, false, std::iter::empty()),
+    let opaque_impl = || {
+        quote! {
+            collector.collect_in_manual_struct::<Self>()
+                .field_const_size("data", ::core::mem::size_of::<Self>(), 0);
         }
+    };
+
+    let struct_impl = |source, access_prefix, fields| match fields {
+        Fields::Named(named) => derive_fields(
+            &crate_,
+            &opts,
+            allow_nonstatic,
+            source,
+            access_prefix,
+            false,
+            named.named.into_iter().map(|mut f| {
+                let ident = f.ident.take();
+                (quote! { #ident }, f)
+            }),
+        ),
+        Fields::Unnamed(unnamed) => derive_fields(
+            &crate_,
+            &opts,
+            allow_nonstatic,
+            source,
+            access_prefix,
+            unnamed.unnamed.len() == 1,
+            unnamed
+                .unnamed
+                .into_iter()
+                .enumerate()
+                .map(|(i, f)| (format!("{i}").parse().unwrap(), f)),
+        ),
+        Fields::Unit => derive_fields(
+            &crate_,
+            &opts,
+            allow_nonstatic,
+            source,
+            access_prefix,
+            false,
+            std::iter::empty(),
+        ),
     };
 
     let output = if opts.opaque_all_inline.is_present() {
@@ -228,17 +241,16 @@ fn derive_inner(
         match item.data {
             Data::Struct(struct_) => match struct_.fields {
                 Fields::Unit => opaque_impl(),
-                fields => darling_unwrap!(
-                    struct_impl(
-                        quote!{ #collector.collect_in_struct::<Self>() },
-                        quote!{ self. },
-                        fields
-                    )
-                ),
+                fields => darling_unwrap!(struct_impl(
+                    quote! { #collector.collect_in_struct::<Self>() },
+                    quote! { self. },
+                    fields
+                )),
             },
             Data::Enum(enum_) if enum_.variants.is_empty() => opaque_impl(),
-            Data::Enum(enum_) if enum_.variants.iter().all(|i| i.fields == Fields::Unit) =>
-                opaque_impl(),
+            Data::Enum(enum_) if enum_.variants.iter().all(|i| i.fields == Fields::Unit) => {
+                opaque_impl()
+            }
             Data::Enum(enum_) => {
                 #[derive(Debug)]
                 enum Repr {
@@ -247,15 +259,19 @@ fn derive_inner(
                 }
 
                 let tag_size = match opts.override_repr {
-                    Some(ref repr) => quote!{ Some(::core::mem::size_of::<#repr>()) },
-                    None if opts.ignore_repr.is_present() => quote!{ None },
+                    Some(ref repr) => quote! { Some(::core::mem::size_of::<#repr>()) },
+                    None if opts.ignore_repr.is_present() => quote! { None },
                     None => {
-                        let repr = item.attrs.iter()
+                        let repr = item
+                            .attrs
+                            .iter()
                             .filter(|i| i.path.is_ident("repr"))
                             .filter_map(|i| {
                                 use syn::parse::Parser;
 
-                                fn parse_repr_arg(input: syn::parse::ParseStream) -> syn::Result<Option<Repr>> {
+                                fn parse_repr_arg(
+                                    input: syn::parse::ParseStream,
+                                ) -> syn::Result<Option<Repr>> {
                                     let content;
                                     syn::parenthesized!(content in input);
                                     let out = content.parse()?;
@@ -276,80 +292,85 @@ fn derive_inner(
                             });
 
                         match repr {
-                            None => quote!{ None },
-                            Some(Repr::C) => quote!{ Some(::core::mem::size_of::<::std::os::raw::c_int>()) },
-                            Some(Repr::Ty(name)) => quote!{ Some(::core::mem::size_of::<#name>()) },
+                            None => quote! { None },
+                            Some(Repr::C) => {
+                                quote! { Some(::core::mem::size_of::<::std::os::raw::c_int>()) }
+                            }
+                            Some(Repr::Ty(name)) => {
+                                quote! { Some(::core::mem::size_of::<#name>()) }
+                            }
                         }
                     }
                 };
 
-                let variants: Vec<_> = darling_unwrap!(
-                    enum_.variants.into_iter()
-                        .map(|variant| {
-                            let variant_opts = VariantOpts::from_variant(&variant)?;
-                            let variantname = match variant_opts.rename {
-                                None => variant.ident,
-                                Some(renamed) => renamed,
-                            };
-                            let (matcher, match_fixer, prefix) = match variant.fields {
-                                Fields::Named(ref named) => {
-                                    let named = named.named.iter().map(|i| i.ident.clone().unwrap());
-                                    (quote!{ { #( ref #named ),* } }, quote!{ }, quote!{ * })
-                                },
-                                Fields::Unnamed(ref unnamed) => {
-                                    let named = (0..unnamed.unnamed.len())
-                                        .map(|i| format!("x{i}").parse::<TokenStream2>().unwrap())
-                                        .collect::<Vec<_>>();
-                                    (
-                                        quote!{ ( #( ref #named ),* ) },
-                                        quote!{ let fixed = ( #( #named, )* ); },
-                                        quote!{ *fixed. }
-                                    )
-                                },
-                                Fields::Unit => (quote!{ }, quote!{ }, quote!{ }),
-                            };
-
-                            let source = quote!{
-                                #collector.collect_in_variant::<Self>(
-                                    ::core::stringify!(#variantname),
-                                    #tag_size
+                let variants: Vec<_> = darling_unwrap!(enum_
+                    .variants
+                    .into_iter()
+                    .map(|variant| {
+                        let variant_opts = VariantOpts::from_variant(&variant)?;
+                        let variantname = match variant_opts.rename {
+                            None => variant.ident,
+                            Some(renamed) => renamed,
+                        };
+                        let (matcher, match_fixer, prefix) = match variant.fields {
+                            Fields::Named(ref named) => {
+                                let named = named.named.iter().map(|i| i.ident.clone().unwrap());
+                                (quote! { { #( ref #named ),* } }, quote! {}, quote! { * })
+                            }
+                            Fields::Unnamed(ref unnamed) => {
+                                let named = (0..unnamed.unnamed.len())
+                                    .map(|i| format!("x{i}").parse::<TokenStream2>().unwrap())
+                                    .collect::<Vec<_>>();
+                                (
+                                    quote! { ( #( ref #named ),* ) },
+                                    quote! { let fixed = ( #( #named, )* ); },
+                                    quote! { *fixed. },
                                 )
-                            };
+                            }
+                            Fields::Unit => (quote! {}, quote! {}, quote! {}),
+                        };
 
-                            let out = match struct_impl(source, prefix, variant.fields) {
-                                Ok(out) => out,
-                                Err(err) => return Err(err),
-                            };
+                        let source = quote! {
+                            #collector.collect_in_variant::<Self>(
+                                ::core::stringify!(#variantname),
+                                #tag_size
+                            )
+                        };
 
-                            Ok(quote!{
-                                #ident::#variantname #matcher => {
-                                    #match_fixer
+                        let out = match struct_impl(source, prefix, variant.fields) {
+                            Ok(out) => out,
+                            Err(err) => return Err(err),
+                        };
 
-                                    #out
-                                }
-                            })
+                        Ok(quote! {
+                            #ident::#variantname #matcher => {
+                                #match_fixer
+
+                                #out
+                            }
                         })
-                        .collect()
-                );
+                    })
+                    .collect());
 
-                quote!{
+                quote! {
                     match *self {
                         #(#variants)*
                     }
                 }
-            },
-            Data::Union(union_) =>
+            }
+            Data::Union(union_) => {
                 return TokenStream::from(
                     Error::custom("HowMuchWhere cannot be automatically derived for `union`s")
                         .with_span(&union_.union_token)
-                        .write_errors()
-                ),
+                        .write_errors(),
+                )
+            }
         }
     };
 
     let method = method(collector, crate_.clone());
     let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
-    let output = quote!{
+    let output = quote! {
         impl #impl_generics #crate_::#derived for #ident #ty_generics #where_clause {
             #method {
                 #output
@@ -364,11 +385,13 @@ fn derive_inner(
 pub fn derive_how_much_where(item: TokenStream) -> TokenStream {
     derive_inner(
         item,
-        quote!{ HowMuchWhere },
-        &|collector, crate_| quote!{
-            fn how_much_where_impl(&self, #collector: &mut #crate_::Collector)
+        quote! { HowMuchWhere },
+        &|collector, crate_| {
+            quote! {
+                fn how_much_where_impl(&self, #collector: &mut #crate_::Collector)
+            }
         },
-        true
+        true,
     )
 }
 
@@ -376,10 +399,12 @@ pub fn derive_how_much_where(item: TokenStream) -> TokenStream {
 pub fn derive_statically_known(item: TokenStream) -> TokenStream {
     derive_inner(
         item,
-        quote!{ StaticallyKnown },
-        &|collector, crate_| quote!{
-            fn how_much_where_impl_static(#collector: &mut #crate_::Collector)
+        quote! { StaticallyKnown },
+        &|collector, crate_| {
+            quote! {
+                fn how_much_where_impl_static(#collector: &mut #crate_::Collector)
+            }
         },
-        false
+        false,
     )
 }
