@@ -47,6 +47,11 @@ pub fn format_path(path: &Path) -> String {
     return out;
 }
 
+/// Use this for contexts that may need to span multiple crates with different needs
+pub trait Provides<T> {
+    fn provide(&self) -> Option<&T>;
+}
+
 pub type Collection = HashMap<Path, usize>;
 
 #[derive(
