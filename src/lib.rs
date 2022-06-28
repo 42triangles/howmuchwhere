@@ -566,20 +566,36 @@ impl FollowMode for UniqueFollow {}
 pub struct Follow<'a, T: ?Sized, Mode: FollowMode>(pub &'a T, std::marker::PhantomData<Mode>);
 
 impl<'a, T: ?Sized, M: FollowMode> Follow<'a, T, M> {
-    pub fn from_ref(x: &'a &T) -> Self {
-        Follow(*x, std::marker::PhantomData)
-    }
-
-    pub fn from_ref_mut(x: &'a &mut T) -> Self {
-        Follow(*x, std::marker::PhantomData)
-    }
-
     pub unsafe fn from_ptr(x: &'a *const T) -> Self {
         Follow(&**x, std::marker::PhantomData)
     }
 
     pub unsafe fn from_ptr_mut(x: &'a *mut T) -> Self {
         Follow(&**x, std::marker::PhantomData)
+    }
+}
+
+impl<'a, T: ?Sized, M: FollowMode> From<&'a &'_ T> for Follow<'a, T, M> {
+    fn from(x: &'a &T) -> Self {
+        Follow(*x, std::marker::PhantomData)
+    }
+}
+
+impl<'a, T: ?Sized, M: FollowMode> From<&'a &'_ mut T> for Follow<'a, T, M> {
+    fn from(x: &'a &mut T) -> Self {
+        Follow(*x, std::marker::PhantomData)
+    }
+}
+
+impl<'a, T: ?Sized, M: FollowMode> From<&'a T> for Follow<'a, T, M> {
+    fn from(x: &'a T) -> Self {
+        Follow(x, std::marker::PhantomData)
+    }
+}
+
+impl<'a, T: ?Sized, M: FollowMode> From<&'a mut T> for Follow<'a, T, M> {
+    fn from(x: &'a mut T) -> Self {
+        Follow(x, std::marker::PhantomData)
     }
 }
 

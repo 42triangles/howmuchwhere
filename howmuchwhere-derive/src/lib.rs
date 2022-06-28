@@ -46,6 +46,8 @@ struct FieldOpts {
     constructor: Option<syn::Path>,
     copy: Flag,
     clone: Flag,
+    follow_shared: Flag,
+    follow_unique: Flag,
     #[darling(rename = "unsafe")]
     unsafe_: Flag,
 }
@@ -68,14 +70,17 @@ fn derive_fields(
                     Some(renamed) => quote! { #renamed },
                 };
                 let field_name = quote! { stringify!(#field_name) };
+                let ty = &field.ty;
+                let access = quote! { & #access_prefix #name };
 
-                enum Mode<'a> {
+                enum Mode {
                     Normal,
                     SizeOfVal,
                     SizeOf,
                     StaticallyKnown,
                     WithType {
-                        ty: &'a syn::Type,
+                        ty: TokenStream2,
+                        constructor: Option<TokenStream2>,
                         statically_known: bool,
                     },
                 }
@@ -91,20 +96,64 @@ fn derive_fields(
                     .or_else(|| flag_mode(&opts.statically_known, Mode::StaticallyKnown))
                     .unwrap_or_else(|| Mode::Normal);
 
-                let mode = match field_opts.with {
-                    Some(ref ty) if matches!(mode, Mode::StaticallyKnown) => Mode::WithType {
+                let with = if let Some(ref ty) = field_opts.with {
+                    Some((
+                        quote! { #ty },
+                        field_opts.constructor.as_ref().map(|c| quote! { #c }),
+                    ))
+                } else if field_opts.follow_shared.is_present()
+                    || field_opts.follow_unique.is_present()
+                {
+                    let constructor = if matches!(*ty, syn::Type::Ptr(_)) {
+                        if !field_opts.unsafe_.is_present() {
+                            return Error::custom(
+                                "Following a pointer is unsafe, please use the `unsafe` flag",
+                            )
+                            .with_span(&field)
+                            .write_errors()
+                            .into();
+                        }
+
+                        Some(quote! { from_ptr })
+                    } else {
+                        None
+                    };
+
+                    let follow_kind = if field_opts.follow_shared.is_present() {
+                        quote! { SharedFollow }
+                    } else {
+                        quote! { UniqueFollow }
+                    };
+
+                    Some((
+                        quote! {
+                            #crate_::Follow<
+                                '_,
+                                <#ty as ::core::ops::Deref>::Target,
+                                #crate_::#follow_kind
+                            >
+                        },
+                        constructor,
+                    ))
+                } else {
+                    None
+                };
+
+                let mode = match with {
+                    Some((ty, constructor)) if matches!(mode, Mode::StaticallyKnown) => {
+                        Mode::WithType {
+                            ty,
+                            constructor,
+                            statically_known: true,
+                        }
+                    }
+                    Some((ty, constructor)) => Mode::WithType {
                         ty,
-                        statically_known: true,
-                    },
-                    Some(ref ty) => Mode::WithType {
-                        ty,
+                        constructor,
                         statically_known: false,
                     },
                     None => mode,
                 };
-
-                let access = quote! { & #access_prefix #name };
-                let ty = &field.ty;
 
                 let out = match mode {
                     Mode::Normal if allow_nonstatic => {
@@ -125,10 +174,13 @@ fn derive_fields(
                     Mode::WithType {
                         ty,
                         statically_known,
+                        ..
                     } if statically_known || !allow_nonstatic => {
                         quote! { .field_statically_known::<#ty>(#crate_::Inline, #field_name) }
                     }
-                    Mode::WithType { ty, .. } => {
+                    Mode::WithType {
+                        ty, constructor, ..
+                    } => {
                         let access = if field_opts.copy.is_present() {
                             quote! { *#access }
                         } else if field_opts.clone.is_present() {
@@ -137,7 +189,7 @@ fn derive_fields(
                             quote! { #access }
                         };
 
-                        let convert = match field_opts.constructor {
+                        let convert = match constructor {
                             Some(path) => quote! { <#ty>::#path(#access) },
                             None => quote! { <#ty as ::core::convert::From<_>>::from(#access) },
                         };

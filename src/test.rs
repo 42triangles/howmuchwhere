@@ -236,6 +236,45 @@ fn test_shared_cycle() {
 fn test_with() {
     #[derive(HowMuchWhere)]
     #[howmuchwhere(__hmw_internal_use)]
+    struct Test1<'a> {
+        #[howmuchwhere(with = "Follow<'_, u8, UniqueFollow>")]
+        x: &'a u8,
+    }
+
+    assert_eq!(
+        Test1 { x: &3 }.how_much_where(),
+        CollectionResult {
+            root: hash_map! {
+                path![:Test1.x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
+                path![:Test1.x :(Follow<u8, UniqueFollow>).referenced :u8.value] => mem::size_of::<u8>(),
+            },
+            shared: HashMap::new(),
+        }
+    );
+
+    #[derive(HowMuchWhere)]
+    #[howmuchwhere(__hmw_internal_use)]
+    struct Test2<'a> {
+        #[howmuchwhere(follow_shared)]
+        x: &'a u8,
+    }
+
+    assert_eq!(
+        Test2 { x: &3 }.how_much_where(),
+        CollectionResult {
+            root: hash_map! {
+                path![:Test2.x :(Follow<u8, SharedFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
+                path![:Test2.x :(Follow<u8, SharedFollow>).referenced :u8.value] => mem::size_of::<u8>(),
+            },
+            shared: HashMap::new(),
+        }
+    );
+}
+
+#[test]
+fn test_with_extra() {
+    #[derive(HowMuchWhere)]
+    #[howmuchwhere(__hmw_internal_use)]
     struct Test {
         #[howmuchwhere(with = "u16", copy)]
         x: u8,
@@ -256,13 +295,19 @@ fn test_with() {
 fn test_with_constructor() {
     #[derive(HowMuchWhere)]
     #[howmuchwhere(__hmw_internal_use)]
-    struct Test<'a> {
-        #[howmuchwhere(with = "Follow<'_, u8, UniqueFollow>", constructor = "from_ref")]
-        x: &'a u8,
+    struct Test {
+        #[howmuchwhere(
+            unsafe,
+            with = "Follow<'_, u8, UniqueFollow>",
+            constructor = "from_ptr"
+        )]
+        x: *const u8,
     }
 
+    let x = 3;
+
     assert_eq!(
-        Test { x: &3 }.how_much_where(),
+        Test { x: &x }.how_much_where(),
         CollectionResult {
             root: hash_map! {
                 path![:Test.x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
