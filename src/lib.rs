@@ -1,17 +1,19 @@
 use std::alloc::Layout;
-use std::collections::HashMap;
-use std::mem;
-use std::ops;
 use std::cmp::max;
-use std::num::NonZeroUsize;
+use std::collections::HashMap;
 use std::fmt;
+use std::mem;
+use std::num::NonZeroUsize;
+use std::ops;
 
 pub use howmuchwhere_derive::{HowMuchWhere, StaticallyKnown};
 
 #[cfg(test)]
 mod test;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, HowMuchWhere, StaticallyKnown)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, HowMuchWhere, StaticallyKnown,
+)]
 #[howmuchwhere(__hmw_internal_use)]
 pub enum Kind {
     Type,
@@ -47,7 +49,9 @@ pub fn format_path(path: &Path) -> String {
 
 pub type Collection = HashMap<Path, usize>;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, HowMuchWhere, StaticallyKnown)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, HowMuchWhere, StaticallyKnown,
+)]
 #[howmuchwhere(__hmw_internal_use, opaque_all_inline)]
 pub struct OpaquePointer(NonZeroUsize);
 
@@ -74,8 +78,12 @@ pub struct CollectionResult {
 
 impl CollectionResult {
     pub fn total_size(&self) -> usize {
-        self.root.values().copied().sum::<usize>() +
-            self.shared.values().map(|i| i.1.values().copied().sum::<usize>()).sum::<usize>()
+        self.root.values().copied().sum::<usize>()
+            + self
+                .shared
+                .values()
+                .map(|i| i.1.values().copied().sum::<usize>())
+                .sum::<usize>()
     }
 }
 
@@ -114,17 +122,20 @@ impl std::fmt::Debug for CollectionResult {
 #[derive(HowMuchWhere)]
 #[howmuchwhere(__hmw_internal_use)]
 pub struct Collector<'a> {
-    #[howmuchwhere(category = "state")] parent_shared: Option<OpaquePointer>,
-    #[howmuchwhere(category = "state")] current_prefix: Path,
-    #[howmuchwhere(category = "data")] data: Collection,
+    #[howmuchwhere(category = "state")]
+    parent_shared: Option<OpaquePointer>,
+    #[howmuchwhere(category = "state")]
+    current_prefix: Path,
     #[howmuchwhere(category = "data")]
-        shared: &'a mut HashMap<OpaquePointer, (Vec<GeneralPath>, Collection)>,
+    data: Collection,
+    #[howmuchwhere(category = "data")]
+    shared: &'a mut HashMap<OpaquePointer, (Vec<GeneralPath>, Collection)>,
 }
 
 impl<'a> Collector<'a> {
     fn new(
         parent_shared: Option<OpaquePointer>,
-        shared: &'a mut HashMap<OpaquePointer, (Vec<GeneralPath>, Collection)>
+        shared: &'a mut HashMap<OpaquePointer, (Vec<GeneralPath>, Collection)>,
     ) -> Self {
         Collector {
             parent_shared,
@@ -212,13 +223,19 @@ impl<'a> Collector<'a> {
         variant: &'static str,
         tag_size: Option<usize>,
     ) -> VariantCollector<'a, '_> {
-        let mut out = self.collect_variant_with::<T>(variant, mem::size_of::<T>(), match tag_size {
-            Some(_) => StructMode::VariantKnownTag,
-            None => StructMode::VariantUnknownTag
-        });
+        let mut out = self.collect_variant_with::<T>(
+            variant,
+            mem::size_of::<T>(),
+            match tag_size {
+                Some(_) => StructMode::VariantKnownTag,
+                None => StructMode::VariantUnknownTag,
+            },
+        );
 
         if let Some(tag_size) = tag_size {
-            out.category("overhead", |c| c.field_const_size("tag_size", tag_size, 0).end_ref());
+            out.category("overhead", |c| {
+                c.field_const_size("tag_size", tag_size, 0).end_ref()
+            });
         }
 
         out
@@ -239,7 +256,9 @@ impl<'a> Collector<'a> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Debug, HowMuchWhere, StaticallyKnown)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Debug, HowMuchWhere, StaticallyKnown,
+)]
 #[howmuchwhere(__hmw_internal_use)]
 pub enum Location {
     #[default]
@@ -262,9 +281,12 @@ enum StructMode {
 #[howmuchwhere(__hmw_internal_use)]
 pub struct StructCollector<'a: 'b, 'b> {
     collector: &'b mut Collector<'a>,
-    #[howmuchwhere(category = "detect_padding")] full_size: usize,
-    #[howmuchwhere(category = "detect_padding")] seen_size: usize,
-    #[howmuchwhere(category = "detect_padding")] mode: StructMode,
+    #[howmuchwhere(category = "detect_padding")]
+    full_size: usize,
+    #[howmuchwhere(category = "detect_padding")]
+    seen_size: usize,
+    #[howmuchwhere(category = "detect_padding")]
+    mode: StructMode,
 }
 
 impl StructCollector<'_, '_> {
@@ -297,31 +319,60 @@ impl StructCollector<'_, '_> {
         self
     }
 
-    pub fn field(&mut self, loc: Location, name: &'static str, field: &(impl HowMuchWhere + ?Sized)) -> &mut Self {
+    pub fn field(
+        &mut self,
+        loc: Location,
+        name: &'static str,
+        field: &(impl HowMuchWhere + ?Sized),
+    ) -> &mut Self {
         match loc {
             Inline => {
                 self.seen_size = self.seen_size.checked_add(mem::size_of_val(field)).unwrap();
                 self.field_generic(name, None, |this| field.how_much_where_impl(this))
-            },
+            }
             Allocated => self.field_generic(name, None, |this| field.how_much_where_impl(this)),
-            Shared => self.field_generic_shared(name, field, |this| field.how_much_where_impl(this)),
+            Shared => {
+                self.field_generic_shared(name, field, |this| field.how_much_where_impl(this))
+            }
         }
     }
 
-    pub fn shared_field_via<T: ?Sized>(&mut self, name: &'static str, shared: *const T, field: &(impl HowMuchWhere + ?Sized)) -> &mut Self {
+    pub fn shared_field_via<T: ?Sized>(
+        &mut self,
+        name: &'static str,
+        shared: *const T,
+        field: &(impl HowMuchWhere + ?Sized),
+    ) -> &mut Self {
         self.field_generic_shared(name, shared, |this| field.how_much_where_impl(this))
     }
 
-    pub fn field_const_size(&mut self, name: &'static str, inline_size: usize, alloc_size: usize) -> &mut Self {
+    pub fn field_const_size(
+        &mut self,
+        name: &'static str,
+        inline_size: usize,
+        alloc_size: usize,
+    ) -> &mut Self {
         self.seen_size += inline_size;
-        self.field_generic(name, None, |this| this.push_field_inner(inline_size.checked_add(alloc_size).unwrap()))
+        self.field_generic(name, None, |this| {
+            this.push_field_inner(inline_size.checked_add(alloc_size).unwrap())
+        })
     }
 
-    pub fn field_shared_const_size<T: ?Sized>(&mut self, name: &'static str, shared: *const T, size: usize) -> &mut Self {
+    pub fn field_shared_const_size<T: ?Sized>(
+        &mut self,
+        name: &'static str,
+        shared: *const T,
+        size: usize,
+    ) -> &mut Self {
         self.field_generic_shared(name, shared, |this| this.push_field_inner(size))
     }
 
-    pub fn field_size_of_val<T: ?Sized>(&mut self, loc: Location, name: &'static str, field: &T) -> &mut Self {
+    pub fn field_size_of_val<T: ?Sized>(
+        &mut self,
+        loc: Location,
+        name: &'static str,
+        field: &T,
+    ) -> &mut Self {
         let size = mem::size_of_val(field);
         match loc {
             Inline => self.field_const_size(name, size, 0),
@@ -330,7 +381,11 @@ impl StructCollector<'_, '_> {
         }
     }
 
-    pub fn field_statically_known<T: StaticallyKnown>(&mut self, loc: Location, name: &'static str) -> &mut Self {
+    pub fn field_statically_known<T: StaticallyKnown>(
+        &mut self,
+        loc: Location,
+        name: &'static str,
+    ) -> &mut Self {
         if loc == Inline {
             self.seen_size += mem::size_of::<T>();
         }
@@ -350,27 +405,25 @@ impl StructCollector<'_, '_> {
         self
     }
 
-    pub fn end_ref(&mut self) { }
+    pub fn end_ref(&mut self) {}
 
     fn push_padding(&mut self) {
         if self.seen_size < self.full_size {
             let mode = self.mode.clone();
             let diff = self.full_size - self.seen_size;
 
-            self.category(
-                "overhead",
-                |c| c
-                    .field_const_size(
-                        match mode {
-                            StructMode::Struct => "internal_padding",
-                            StructMode::VariantKnownTag => "internal_padding_and_unused",
-                            StructMode::VariantUnknownTag => "internal_tag_padding_and_unused",
-                        },
-                        diff,
-                        0
-                    )
-                    .end_ref()
-            );
+            self.category("overhead", |c| {
+                c.field_const_size(
+                    match mode {
+                        StructMode::Struct => "internal_padding",
+                        StructMode::VariantKnownTag => "internal_padding_and_unused",
+                        StructMode::VariantUnknownTag => "internal_tag_padding_and_unused",
+                    },
+                    diff,
+                    0,
+                )
+                .end_ref()
+            });
 
             self.seen_size = self.full_size;
         }
@@ -405,7 +458,7 @@ impl ops::DerefMut for VariantCollector<'_, '_> {
 
 impl Drop for VariantCollector<'_, '_> {
     fn drop(&mut self) {
-        self.push_padding();  // The padding has to be pushed before the variant is left
+        self.push_padding(); // The padding has to be pushed before the variant is left
 
         self.collector.current_prefix.pop();
     }
@@ -496,7 +549,7 @@ mod sealed {
     }
 }
 
-pub trait FollowMode: sealed::FollowMode { }
+pub trait FollowMode: sealed::FollowMode {}
 
 pub struct SharedFollow;
 impl sealed::FollowMode for SharedFollow {
@@ -588,14 +641,16 @@ fn veclike_collection<'a, T: HowMuchWhere + 'a, C: ?Sized>(
     &'a C: IntoIterator<Item = &'a T>,
 {
     let mut collector = collector.collect_in_manual_struct::<C>();
-    collector.category(
-        "overhead",
-        |c| c
-            .field_size_of_val(Inline, "inline_overhead", value)
-            .field_const_size("unused_capacity", 0, (capacity - len) * Layout::new::<T>().pad_to_align().size())
+    collector.category("overhead", |c| {
+        c.field_size_of_val(Inline, "inline_overhead", value)
+            .field_const_size(
+                "unused_capacity",
+                0,
+                (capacity - len) * Layout::new::<T>().pad_to_align().size(),
+            )
             .field_const_size("data_padding", 0, cumulative_padding::<T>(len))
             .end_ref()
-    );
+    });
     collection_data_without_padding(Allocated, value, &mut collector);
 }
 
@@ -605,14 +660,23 @@ fn collect_smart_ptr<C: ops::Deref<Target = T>, T: HowMuchWhere + ?Sized>(
 ) {
     collector
         .collect_in_manual_struct::<C>()
-        .category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", value).end_ref())
+        .category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", value)
+                .end_ref()
+        })
         .field(Allocated, "referenced", &**value);
 }
 
-fn collect_smart_ptr_static<C: ops::Deref>(collector: &mut Collector<'_>) where C::Target: StaticallyKnown {
+fn collect_smart_ptr_static<C: ops::Deref>(collector: &mut Collector<'_>)
+where
+    C::Target: StaticallyKnown,
+{
     collector
         .collect_in_manual_struct::<C>()
-        .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<C>(), 0).end_ref())
+        .category("overhead", |c| {
+            c.field_const_size("inline_overhead", mem::size_of::<C>(), 0)
+                .end_ref()
+        })
         .field_statically_known::<C::Target>(Allocated, "referenced");
 }
 
@@ -652,13 +716,11 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::BinaryHeap<T> {
 impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::binary_heap::IntoIter<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category(
-            "overhead",
-            |c| c
-                .field_size_of_val(Inline, "inline_overhead", self)
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
                 .field_const_size("unused_capacity_unknown", 0, 1)
                 .end_ref()
-        );
+        });
 
         // Sadly we can't access the data without cloning
         let mut len = 0usize;
@@ -667,7 +729,10 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::binary_heap::In
             len += 1;
         }
 
-        collector.category("overhead", |c| c.field_const_size("data_padding", 0, cumulative_padding::<T>(len)).end_ref());
+        collector.category("overhead", |c| {
+            c.field_const_size("data_padding", 0, cumulative_padding::<T>(len))
+                .end_ref()
+        });
     }
 }
 
@@ -723,31 +788,30 @@ fn apply_btree_info<K, V>(len: usize, collector: &mut StructCollector<'_, '_>) {
         .unwrap()
         .0;
 
-    let padded_kv_size = Layout::new::<K>().pad_to_align().size() + Layout::new::<V>().pad_to_align().size();
+    let padded_kv_size =
+        Layout::new::<K>().pad_to_align().size() + Layout::new::<V>().pad_to_align().size();
 
     let overhead = |layout: Layout| layout.size() - 11 * padded_kv_size;
 
-    collector.category(
-        "overhead",
-        |c| c
-            .field_const_size(
-                "alloc_overhead",
-                0,
-                overhead(leaf_node_layout) * leaf_nodes
-                    + overhead(internal_node_layout) * internal_nodes,
-            )
-            .field_const_size(
-                "min_unused_capacity",
-                0,
-                padded_kv_size * (nodes * 11 - len)
-            )
-            .field_const_size(
-                "min_data_padding",
-                0,
-                (nodes * 11) * (padded_kv_size - (mem::size_of::<K>() + mem::size_of::<V>())),
-            )
-            .end_ref()
-    );
+    collector.category("overhead", |c| {
+        c.field_const_size(
+            "alloc_overhead",
+            0,
+            overhead(leaf_node_layout) * leaf_nodes
+                + overhead(internal_node_layout) * internal_nodes,
+        )
+        .field_const_size(
+            "min_unused_capacity",
+            0,
+            padded_kv_size * (nodes * 11 - len),
+        )
+        .field_const_size(
+            "min_data_padding",
+            0,
+            (nodes * 11) * (padded_kv_size - (mem::size_of::<K>() + mem::size_of::<V>())),
+        )
+        .end_ref()
+    });
 }
 
 /// # This implementation has issues
@@ -758,7 +822,10 @@ fn apply_btree_info<K, V>(len: usize, collector: &mut StructCollector<'_, '_>) {
 impl<K: HowMuchWhere, V: HowMuchWhere> HowMuchWhere for std::collections::BTreeMap<K, V> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref());
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
+                .end_ref()
+        });
 
         apply_btree_info::<K, V>(self.len(), &mut collector);
 
@@ -777,7 +844,10 @@ impl<K: HowMuchWhere, V: HowMuchWhere> HowMuchWhere for std::collections::BTreeM
 impl<T: HowMuchWhere> HowMuchWhere for std::collections::BTreeSet<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref());
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
+                .end_ref()
+        });
 
         apply_btree_info::<T, ()>(self.len(), &mut collector);
 
@@ -789,7 +859,7 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::BTreeSet<T> {
 
 fn apply_hashmap_info<K, V>(len: usize, capacity: usize, collector: &mut StructCollector<'_, '_>) {
     let kv_layout = Layout::new::<(K, V)>().pad_to_align();
-    
+
     let buckets = match capacity {
         0 => return,
         1..=3 => 4,
@@ -798,20 +868,29 @@ fn apply_hashmap_info<K, V>(len: usize, capacity: usize, collector: &mut StructC
     };
 
     let layout = Layout::from_size_align(
-        kv_layout.size() * buckets + buckets + 128/8,
-        max(kv_layout.align(), 128/8)
-    ).unwrap().pad_to_align();
+        kv_layout.size() * buckets + buckets + 128 / 8,
+        max(kv_layout.align(), 128 / 8),
+    )
+    .unwrap()
+    .pad_to_align();
 
-    let padded_kv_size = Layout::new::<K>().pad_to_align().size() + Layout::new::<V>().pad_to_align().size();
+    let padded_kv_size =
+        Layout::new::<K>().pad_to_align().size() + Layout::new::<V>().pad_to_align().size();
 
-    collector.category(
-        "overhead",
-        |c| c
-            .field_const_size("alloc_overhead", 0, layout.size() - padded_kv_size * capacity)
-            .field_const_size("unused_capacity", 0, padded_kv_size * (capacity - len))
-            .field_const_size("data_padding", 0, len * (padded_kv_size - mem::size_of::<K>() - mem::size_of::<V>()))
-            .end_ref()
-    );
+    collector.category("overhead", |c| {
+        c.field_const_size(
+            "alloc_overhead",
+            0,
+            layout.size() - padded_kv_size * capacity,
+        )
+        .field_const_size("unused_capacity", 0, padded_kv_size * (capacity - len))
+        .field_const_size(
+            "data_padding",
+            0,
+            len * (padded_kv_size - mem::size_of::<K>() - mem::size_of::<V>()),
+        )
+        .end_ref()
+    });
 }
 
 /// # This implementation has issues
@@ -822,7 +901,10 @@ impl<K: HowMuchWhere, V: HowMuchWhere, S> HowMuchWhere for std::collections::Has
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
-        collector.category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref());
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
+                .end_ref()
+        });
 
         apply_hashmap_info::<K, V>(self.len(), self.capacity(), &mut collector);
 
@@ -841,7 +923,10 @@ impl<T: HowMuchWhere, S> HowMuchWhere for std::collections::HashSet<T, S> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
-        collector.category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref());
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
+                .end_ref()
+        });
 
         apply_hashmap_info::<T, ()>(self.len(), self.capacity(), &mut collector);
 
@@ -858,12 +943,14 @@ fn apply_linkedlist_info<'a, T>(len: usize, collector: &mut StructCollector) {
         _element: T,
     }
 
-    collector.category(
-        "overhead",
-        |c| c
-            .field_const_size("alloc_overhead", 0, len * (mem::size_of::<Node<T>>() - mem::size_of::<T>()))
-            .end_ref()
-    );
+    collector.category("overhead", |c| {
+        c.field_const_size(
+            "alloc_overhead",
+            0,
+            len * (mem::size_of::<Node<T>>() - mem::size_of::<T>()),
+        )
+        .end_ref()
+    });
 }
 
 /// # This implementation has issues
@@ -872,7 +959,10 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::LinkedList<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
-        collector.category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref());
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
+                .end_ref()
+        });
 
         apply_linkedlist_info::<T>(self.len(), &mut collector);
 
@@ -891,7 +981,10 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::linked_list::In
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
-        collector.category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref());
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
+                .end_ref()
+        });
 
         let mut len = 0usize;
         for i in self.clone() {
@@ -915,13 +1008,11 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::VecDeque<T> {
 impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::vec_deque::IntoIter<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category(
-            "overhead",
-            |c| c
-                .field_size_of_val(Inline, "inline_overhead", self)
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
                 .field_const_size("unused_capacity_unknown", 0, 1)
                 .end_ref()
-        );
+        });
 
         // Sadly we can't access the data without cloning
         let mut len = 0usize;
@@ -930,7 +1021,10 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::vec_deque::Into
             len += 1;
         }
 
-        collector.category("overhead", |c| c.field_const_size("data_padding", 0, cumulative_padding::<T>(len)).end_ref());
+        collector.category("overhead", |c| {
+            c.field_const_size("data_padding", 0, cumulative_padding::<T>(len))
+                .end_ref()
+        });
     }
 }
 
@@ -942,7 +1036,8 @@ impl<T: ?Sized> HowMuchWhere for &'_ T {
 
 impl<'a, T: ?Sized + 'a> StaticallyKnown for &'a T {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
+        collector
+            .collect_in_manual_struct::<Self>()
             .field_const_size("value", mem::size_of::<Self>(), 0);
     }
 }
@@ -955,7 +1050,8 @@ impl<T: ?Sized> HowMuchWhere for &'_ mut T {
 
 impl<'a, T: ?Sized + 'a> StaticallyKnown for &'a mut T {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
+        collector
+            .collect_in_manual_struct::<Self>()
             .field_const_size("value", mem::size_of::<Self>(), 0);
     }
 }
@@ -977,12 +1073,17 @@ impl<T: HowMuchWhere + ?Sized + ToOwned> HowMuchWhere for std::borrow::Cow<'_, T
         use std::borrow::Cow;
         match *self {
             Cow::Borrowed(_) => {
-                collector.collect_in_variant::<Self>("Borrowed", None)
+                collector
+                    .collect_in_variant::<Self>("Borrowed", None)
                     .field_statically_known::<&T>(Inline, "reference");
-            },
+            }
             Cow::Owned(_) => {
-                collector.collect_in_manual_variant::<Self>("Owned")
-                    .category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref())
+                collector
+                    .collect_in_manual_variant::<Self>("Owned")
+                    .category("overhead", |c| {
+                        c.field_size_of_val(Inline, "inline_overhead", self)
+                            .end_ref()
+                    })
                     .field(Allocated, "referenced", &**self);
             }
         }
@@ -995,8 +1096,16 @@ impl<T: HowMuchWhere + ?Sized + ToOwned> HowMuchWhere for std::borrow::Cow<'_, T
 impl<T: HowMuchWhere + Default> HowMuchWhere for std::cell::Cell<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let inner = self.take();
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", &inner);
         self.set(inner);
     }
@@ -1004,8 +1113,16 @@ impl<T: HowMuchWhere + Default> HowMuchWhere for std::cell::Cell<T> {
 
 impl<T: StaticallyKnown + Default> StaticallyKnown for std::cell::Cell<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1016,21 +1133,35 @@ impl<T: StaticallyKnown + Default> StaticallyKnown for std::cell::Cell<T> {
 impl<T: HowMuchWhere> HowMuchWhere for std::cell::RefCell<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category(
-            "overhead",
-            |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref()
-        );
+        collector.category("overhead", |c| {
+            c.field_const_size(
+                "inline_overhead",
+                mem::size_of::<Self>() - mem::size_of::<T>(),
+                0,
+            )
+            .end_ref()
+        });
         match self.try_borrow() {
             Ok(borrow) => collector.field(Inline, "wrapped", &*borrow).end_ref(),
-            Err(_) => collector.field_const_size("wrapped_lower_bound", mem::size_of::<T>(), 0).end_ref(),
+            Err(_) => collector
+                .field_const_size("wrapped_lower_bound", mem::size_of::<T>(), 0)
+                .end_ref(),
         }
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::cell::RefCell<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1040,32 +1171,64 @@ impl<T: StaticallyKnown> StaticallyKnown for std::cell::RefCell<T> {
 // memory usage is statically known
 impl<T: StaticallyKnown> HowMuchWhere for std::cell::UnsafeCell<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::cell::UnsafeCell<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
 
 impl<T: HowMuchWhere> HowMuchWhere for std::cmp::Reverse<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", &self.0);
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::cmp::Reverse<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1079,14 +1242,20 @@ fn collect_for_args<A: ExactSizeIterator>(args: &A, collector: &mut Collector) {
 
     let capacity = std::env::args().len();
 
-    collector.category(
-        "overhead",
-        |c| c
-            .field_size_of_val(Inline, "inline_overhead", args)
-            .field_const_size("unused_capacity", 0, (capacity - args.len()) * Layout::new::<OsString>().pad_to_align().size())
-            .field_const_size("data_padding", 0, cumulative_padding::<OsString>(args.len()))
+    collector.category("overhead", |c| {
+        c.field_size_of_val(Inline, "inline_overhead", args)
+            .field_const_size(
+                "unused_capacity",
+                0,
+                (capacity - args.len()) * Layout::new::<OsString>().pad_to_align().size(),
+            )
+            .field_const_size(
+                "data_padding",
+                0,
+                cumulative_padding::<OsString>(args.len()),
+            )
             .end_ref()
-    );
+    });
 
     for i in std::env::args_os().skip(capacity - args.len()) {
         collector.field(Allocated, "data", &i);
@@ -1111,18 +1280,20 @@ impl HowMuchWhere for std::env::VarError {
         match *self {
             VarError::NotPresent => {
                 collector.collect_in_variant::<Self>("NotPresent", None);
-            },
+            }
             VarError::NotUnicode(ref data) => {
-                collector.collect_in_variant::<Self>("NotUnicode", None)
+                collector
+                    .collect_in_variant::<Self>("NotUnicode", None)
                     .field(Inline, "wrapped", data);
-            },
+            }
         }
     }
 }
 
 impl HowMuchWhere for std::ffi::OsStr {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
+        collector
+            .collect_in_manual_struct::<Self>()
             .field_size_of_val(Inline, "data", self);
     }
 }
@@ -1130,81 +1301,106 @@ impl HowMuchWhere for std::ffi::OsStr {
 impl HowMuchWhere for std::ffi::OsString {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let actual_data_bytes = mem::size_of_val(self.as_os_str());
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_size_of_val(Inline, "inline_overhead", self)
-                    .field_const_size("unused_capacity", 0, (self.capacity() - self.len()).checked_mul(actual_data_bytes).unwrap() / self.len())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_size_of_val(Inline, "inline_overhead", self)
+                    .field_const_size(
+                        "unused_capacity",
+                        0,
+                        (self.capacity() - self.len())
+                            .checked_mul(actual_data_bytes)
+                            .unwrap()
+                            / self.len(),
+                    )
                     .end_ref()
-            )
+            })
             .field_const_size("data", 0, actual_data_bytes);
     }
 }
 
 impl HowMuchWhere for std::ffi::CStr {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("null_byte", 1, 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("null_byte", 1, 0).end_ref()
+            })
             .field_const_size("data", self.to_bytes().len(), 0);
     }
 }
 
 impl HowMuchWhere for std::ffi::CString {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_size_of_val(Inline, "inline_overhead", self)
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_size_of_val(Inline, "inline_overhead", self)
                     .field_const_size("null_byte", 0, 1)
                     .end_ref()
-            )
+            })
             .field_const_size("data", 0, self.as_bytes().len());
     }
 }
 
 impl HowMuchWhere for std::ffi::FromVecWithNulError {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_const_size("inline_overhead", mem::size_of::<Vec<u8>>(), 0)
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<Vec<u8>>(), 0)
                     .field_const_size("unused_capacity_unknown", 0, 1)
                     .end_ref()
+            })
+            .field_const_size(
+                "inline_data",
+                mem::size_of::<Self>().saturating_sub(mem::size_of::<Vec<u8>>()),
+                0,
             )
-            .field_const_size("inline_data", mem::size_of::<Self>().saturating_sub(mem::size_of::<Vec<u8>>()), 0)
             .field_const_size("data", 0, self.as_bytes().len());
     }
 }
 
 impl<R: HowMuchWhere> HowMuchWhere for std::io::BufReader<R> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<R>(), 0)
-                    .field_const_size("buffer_used", 0, self.buffer().len())
-                    .field_const_size("buffer_capacity_unused", 0, self.capacity() - self.buffer().len())
-                    .end_ref()
-            )
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<R>(),
+                    0,
+                )
+                .field_const_size("buffer_used", 0, self.buffer().len())
+                .field_const_size(
+                    "buffer_capacity_unused",
+                    0,
+                    self.capacity() - self.buffer().len(),
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", self.get_ref());
     }
 }
 
 impl<W: HowMuchWhere + std::io::Write> HowMuchWhere for std::io::BufWriter<W> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<W>(), 0)
-                    .field_const_size("buffer_used", 0, self.buffer().len())
-                    .field_const_size("buffer_capacity_unused", 0, self.capacity() - self.buffer().len())
-                    .end_ref()
-            )
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<W>(),
+                    0,
+                )
+                .field_const_size("buffer_used", 0, self.buffer().len())
+                .field_const_size(
+                    "buffer_capacity_unused",
+                    0,
+                    self.capacity() - self.buffer().len(),
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", self.get_ref());
     }
 }
@@ -1212,7 +1408,8 @@ impl<W: HowMuchWhere + std::io::Write> HowMuchWhere for std::io::BufWriter<W> {
 impl<T: HowMuchWhere, U: HowMuchWhere> HowMuchWhere for std::io::Chain<T, U> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let (left, right) = self.get_ref();
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "left", left)
             .field(Inline, "right", right);
     }
@@ -1220,7 +1417,8 @@ impl<T: HowMuchWhere, U: HowMuchWhere> HowMuchWhere for std::io::Chain<T, U> {
 
 impl<T: StaticallyKnown, U: StaticallyKnown> StaticallyKnown for std::io::Chain<T, U> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<T>(Inline, "left")
             .field_statically_known::<U>(Inline, "right");
     }
@@ -1228,16 +1426,32 @@ impl<T: StaticallyKnown, U: StaticallyKnown> StaticallyKnown for std::io::Chain<
 
 impl<T: HowMuchWhere> HowMuchWhere for std::io::Cursor<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", self.get_ref());
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::io::Cursor<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1248,14 +1462,19 @@ impl HowMuchWhere for std::io::Error {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         match self.get_ref() {
             None => {
-                collector.collect_in_variant::<Self>("Unboxed", None)
+                collector
+                    .collect_in_variant::<Self>("Unboxed", None)
                     .field_const_size("value", 32 / 8, 0);
-            },
+            }
             Some(inner) => {
-                collector.collect_in_manual_variant::<Self>("Boxed")
-                    .category("overhead", |c| c.field_size_of_val(Inline, "inline_overhead", self).end_ref())
+                collector
+                    .collect_in_manual_variant::<Self>("Boxed")
+                    .category("overhead", |c| {
+                        c.field_size_of_val(Inline, "inline_overhead", self)
+                            .end_ref()
+                    })
                     .field_size_of_val(Allocated, "error_base_alloc_size", inner);
-            },
+            }
         }
     }
 }
@@ -1264,7 +1483,8 @@ impl HowMuchWhere for std::io::Error {
 /// NOTE: This requires `W` to be statically known because it cannot be accessed
 impl<W: StaticallyKnown> HowMuchWhere for std::io::IntoInnerError<W> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<W>(Inline, "writer")
             .field(Inline, "error", self.error());
     }
@@ -1272,32 +1492,64 @@ impl<W: StaticallyKnown> HowMuchWhere for std::io::IntoInnerError<W> {
 
 impl<W: std::io::Write + HowMuchWhere> HowMuchWhere for std::io::LineWriter<W> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<W>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<W>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", self.get_ref());
     }
 }
 
 impl<T: std::io::Write + StaticallyKnown> StaticallyKnown for std::io::LineWriter<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
 
 impl<T: HowMuchWhere> HowMuchWhere for std::io::Take<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", self.get_ref());
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::io::Take<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1312,13 +1564,16 @@ impl<A: StaticallyKnown, B: StaticallyKnown> HowMuchWhere for std::iter::Chain<A
 
 impl<A: StaticallyKnown, B: StaticallyKnown> StaticallyKnown for std::iter::Chain<A, B> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<A>() - mem::size_of::<B>(), 0)
-                    .end_ref()
-            )
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<A>() - mem::size_of::<B>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<A>(Inline, "prefix")
             .field_statically_known::<B>(Inline, "suffix");
     }
@@ -1333,11 +1588,12 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::iter::Once<T> {
         match self.clone().next() {
             None => {
                 collector.collect_in_variant::<Self>("Exhausted", None);
-            },
+            }
             Some(val) => {
-                collector.collect_in_variant::<Self>("Filled", None)
+                collector
+                    .collect_in_variant::<Self>("Filled", None)
                     .field(Inline, "item", &val);
-            },
+            }
         }
     }
 }
@@ -1348,14 +1604,16 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::iter::Once<T> {
 /// of types inside)
 impl<T: HowMuchWhere + Clone> HowMuchWhere for std::iter::Repeat<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "item", &self.clone().next().unwrap());
     }
 }
 
 impl<T: StaticallyKnown + Clone> StaticallyKnown for std::iter::Repeat<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<T>(Inline, "item");
     }
 }
@@ -1370,13 +1628,16 @@ impl<A: StaticallyKnown, B: StaticallyKnown> HowMuchWhere for std::iter::Zip<A, 
 
 impl<A: StaticallyKnown, B: StaticallyKnown> StaticallyKnown for std::iter::Zip<A, B> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<A>() - mem::size_of::<B>(), 0)
-                    .end_ref()
-            )
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<A>() - mem::size_of::<B>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<A>(Inline, "left")
             .field_statically_known::<B>(Inline, "right");
     }
@@ -1384,23 +1645,40 @@ impl<A: StaticallyKnown, B: StaticallyKnown> StaticallyKnown for std::iter::Zip<
 
 impl<T: HowMuchWhere> HowMuchWhere for std::num::Wrapping<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", &self.0);
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::num::Wrapping<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
 
 impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::Range<Idx> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "start", &self.start)
             .field(Inline, "end", &self.end);
     }
@@ -1408,7 +1686,8 @@ impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::Range<Idx> {
 
 impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::Range<Idx> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "start")
             .field_statically_known::<Idx>(Inline, "end");
     }
@@ -1416,21 +1695,24 @@ impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::Range<Idx> {
 
 impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeFrom<Idx> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "start", &self.start);
     }
 }
 
 impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeFrom<Idx> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "start");
     }
 }
 
 impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeInclusive<Idx> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "start", self.start())
             .field(Inline, "end", self.end());
     }
@@ -1438,7 +1720,8 @@ impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeInclusive<Idx> {
 
 impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeInclusive<Idx> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "start")
             .field_statically_known::<Idx>(Inline, "end");
     }
@@ -1446,28 +1729,32 @@ impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeInclusive<Idx> {
 
 impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeTo<Idx> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "end", &self.end);
     }
 }
 
 impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeTo<Idx> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "end");
     }
 }
 
 impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeToInclusive<Idx> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "end", &self.end);
     }
 }
 
 impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeToInclusive<Idx> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "end");
     }
 }
@@ -1478,16 +1765,18 @@ impl<T: HowMuchWhere> HowMuchWhere for std::ops::Bound<T> {
 
         match *self {
             Bound::Included(ref x) => {
-                collector.collect_in_variant::<Self>("Included", None)
+                collector
+                    .collect_in_variant::<Self>("Included", None)
                     .field(Inline, "wrapped", x);
-            },
+            }
             Bound::Excluded(ref x) => {
-                collector.collect_in_variant::<Self>("Excluded", None)
+                collector
+                    .collect_in_variant::<Self>("Excluded", None)
                     .field(Inline, "wrapped", x);
-            },
+            }
             Bound::Unbounded => {
                 collector.collect_in_variant::<Self>("Unbounded", None);
-            },
+            }
         }
     }
 }
@@ -1498,13 +1787,15 @@ impl<B: HowMuchWhere, C: HowMuchWhere> HowMuchWhere for std::ops::ControlFlow<B,
 
         match *self {
             ControlFlow::Continue(ref x) => {
-                collector.collect_in_variant::<Self>("Included", None)
+                collector
+                    .collect_in_variant::<Self>("Included", None)
                     .field(Inline, "wrapped", x);
-            },
+            }
             ControlFlow::Break(ref x) => {
-                collector.collect_in_variant::<Self>("Break", None)
+                collector
+                    .collect_in_variant::<Self>("Break", None)
                     .field(Inline, "wrapped", x);
-            },
+            }
         }
     }
 }
@@ -1518,11 +1809,12 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::option::IntoIter<T> {
         match self.clone().next() {
             None => {
                 collector.collect_in_variant::<Self>("ExhaustedOrNone", None);
-            },
+            }
             Some(val) => {
-                collector.collect_in_variant::<Self>("Some", None)
+                collector
+                    .collect_in_variant::<Self>("Some", None)
                     .field(Inline, "item", &val);
-            },
+            }
         }
     }
 }
@@ -1532,34 +1824,52 @@ impl<T: HowMuchWhere> HowMuchWhere for Option<T> {
         match *self {
             None => {
                 collector.collect_in_variant::<Self>("None", None);
-            },
+            }
             Some(ref val) => {
-                collector.collect_in_variant::<Self>("Some", None)
+                collector
+                    .collect_in_variant::<Self>("Some", None)
                     .field(Inline, "wrapped", val);
-            },
+            }
         }
     }
 }
 
 impl<T: HowMuchWhere> HowMuchWhere for std::panic::AssertUnwindSafe<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", &self.0);
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::panic::AssertUnwindSafe<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
 
 impl HowMuchWhere for std::path::Path {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_unsized_struct(self)
+        collector
+            .collect_in_unsized_struct(self)
             .field_size_of_val(Inline, "data", self);
     }
 }
@@ -1568,14 +1878,20 @@ impl HowMuchWhere for std::path::PathBuf {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let actual_data_bytes = mem::size_of_val(self.as_os_str());
         let len = self.as_os_str().len();
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_size_of_val(Inline, "inline_overhead", self)
-                    .field_const_size("unused_capacity", 0, (self.capacity() - len).checked_mul(actual_data_bytes).unwrap() / len)
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_size_of_val(Inline, "inline_overhead", self)
+                    .field_const_size(
+                        "unused_capacity",
+                        0,
+                        (self.capacity() - len)
+                            .checked_mul(actual_data_bytes)
+                            .unwrap()
+                            / len,
+                    )
                     .end_ref()
-            )
+            })
             .field_const_size("data", 0, actual_data_bytes);
     }
 }
@@ -1586,9 +1902,13 @@ impl HowMuchWhere for std::path::PathBuf {
 /// overhead and counts the inline overhead as its own.
 impl<T: std::ops::Deref<Target = D>, D: HowMuchWhere> HowMuchWhere for std::pin::Pin<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>(), 0).end_ref())
-            .field(Shared, "wrapped", self.as_ref().get_ref());  // It might *not* be shared, but we can't know
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<Self>(), 0)
+                    .end_ref()
+            })
+            .field(Shared, "wrapped", self.as_ref().get_ref()); // It might *not* be shared, but we can't know
     }
 }
 
@@ -1601,7 +1921,11 @@ impl HowMuchWhere for std::process::Command {
 
         let mut collector = collector.collect_in_manual_struct::<Self>();
         collector
-            .field_const_size("inline_data", mem::size_of::<Self>() - mem::size_of::<Env>(), 0)
+            .field_const_size(
+                "inline_data",
+                mem::size_of::<Self>() - mem::size_of::<Env>(),
+                0,
+            )
             .field(Allocated, "program", self.get_program());
 
         for i in self.get_args() {
@@ -1613,48 +1937,46 @@ impl HowMuchWhere for std::process::Command {
         }
 
         collector.ignore_size_chunk(mem::size_of::<Env>());
-        collector.field_generic(
-            "envs",
-            None,
-            |c| {
-                let mut c = c.collect_in_manual_struct::<Env>();
+        collector.field_generic("envs", None, |c| {
+            let mut c = c.collect_in_manual_struct::<Env>();
 
-                c.category(
-                    "overhead",
-                    |c| c.field_const_size("inline_overhead", mem::size_of::<Env>(), 0).end_ref()
-                );
+            c.category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<Env>(), 0)
+                    .end_ref()
+            });
 
-                let mut size = 0;
-                for (k, v) in self.get_envs() {
-                    // This is *technically* not correct sinec we're putting `OsStr`s here, but
-                    // they're close enough - plus we don't have access to the `OsString`s either
-                    // way
-                    c.field(Allocated, "keys", k);
-                    c.field_generic(  // why oh why
-                        "values",
-                        None,
-                        |c| match v {
-                            None => {
-                                c.collect_in_variant::<Option<OsString>>("None", None);
-                            },
-                            Some(val) => {
-                                c.collect_in_variant::<Option<OsString>>("Some", None)
-                                    .field(Inline, "wrapped", val);
-                            }
+            let mut size = 0;
+            for (k, v) in self.get_envs() {
+                // This is *technically* not correct sinec we're putting `OsStr`s here, but
+                // they're close enough - plus we don't have access to the `OsString`s either
+                // way
+                c.field(Allocated, "keys", k);
+                c.field_generic(
+                    // why oh why
+                    "values",
+                    None,
+                    |c| match v {
+                        None => {
+                            c.collect_in_variant::<Option<OsString>>("None", None);
                         }
-                    );
-                    size += 1;
-                }
-
-                apply_btree_info::<OsString, Option<OsString>>(size, &mut c);
+                        Some(val) => {
+                            c.collect_in_variant::<Option<OsString>>("Some", None)
+                                .field(Inline, "wrapped", val);
+                        }
+                    },
+                );
+                size += 1;
             }
-        );
+
+            apply_btree_info::<OsString, Option<OsString>>(size, &mut c);
+        });
     }
 }
 
 impl HowMuchWhere for std::process::Output {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field(Inline, "status", &self.status)
             .field(Inline, "stdout", &self.stdout)
             .field(Inline, "stderr", &self.stderr);
@@ -1671,24 +1993,28 @@ impl<'a, T: HowMuchWhere> HowMuchWhere for RcBox<'a, T> {
             _value: T,
         }
 
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c.field_const_size("alloc_overhead", mem::size_of::<RcBoxLayout<T>>() - mem::size_of::<T>(), 0).end_ref()
-            )
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "alloc_overhead",
+                    mem::size_of::<RcBoxLayout<T>>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "referenced", self.0);
     }
 }
 
 impl<T: HowMuchWhere> HowMuchWhere for std::rc::Rc<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_size_of_val(Inline, "inline_overhead", self)
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_size_of_val(Inline, "inline_overhead", self)
                     .end_ref()
-            )
+            })
             .shared_field_via("alloc", &**self, &RcBox(&**self));
     }
 }
@@ -1701,11 +2027,12 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::result::IntoIter<T> {
         match self.clone().next() {
             None => {
                 collector.collect_in_variant::<Self>("ExhaustedOrErr", None);
-            },
+            }
             Some(val) => {
-                collector.collect_in_variant::<Self>("Ok", None)
+                collector
+                    .collect_in_variant::<Self>("Ok", None)
                     .field(Inline, "item", &val);
-            },
+            }
         }
     }
 }
@@ -1714,13 +2041,15 @@ impl<T: HowMuchWhere, E: HowMuchWhere> HowMuchWhere for Result<T, E> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         match *self {
             Ok(ref val) => {
-                collector.collect_in_variant::<Self>("Ok", None)
+                collector
+                    .collect_in_variant::<Self>("Ok", None)
                     .field(Inline, "wrapped", val);
-            },
+            }
             Err(ref val) => {
-                collector.collect_in_variant::<Self>("Err", None)
+                collector
+                    .collect_in_variant::<Self>("Err", None)
                     .field(Inline, "wrapped", val);
-            },
+            }
         }
     }
 }
@@ -1729,8 +2058,12 @@ impl<T: HowMuchWhere, E: HowMuchWhere> HowMuchWhere for Result<T, E> {
 /// NOTE: Sadly it's impossible to retrieve the capacity
 impl HowMuchWhere for std::string::FromUtf8Error {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Vec<u8>>(), 0).end_ref())
+        collector
+            .collect_in_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<Vec<u8>>(), 0)
+                    .end_ref()
+            })
             .field(Allocated, "bytes", self.as_bytes())
             .field(Inline, "error", &self.utf8_error());
     }
@@ -1738,37 +2071,53 @@ impl HowMuchWhere for std::string::FromUtf8Error {
 
 impl HowMuchWhere for str {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_unsized_struct(self)
+        collector
+            .collect_in_unsized_struct(self)
             .field_size_of_val(Inline, "data", self);
     }
 }
 
 impl HowMuchWhere for String {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_size_of_val(Inline, "inline_overhead", self)
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_size_of_val(Inline, "inline_overhead", self)
                     .field_const_size("unused_capacity", 0, self.capacity() - self.len())
                     .end_ref()
-            )
+            })
             .field(Allocated, "wrapped", &**self);
     }
 }
 
 impl<T: HowMuchWhere> HowMuchWhere for std::sync::mpsc::SendError<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", &self.0);
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::sync::mpsc::SendError<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1778,10 +2127,12 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::mpsc::TrySendError<T> {
         use std::sync::mpsc::TrySendError;
 
         match *self {
-            TrySendError::Full(ref val) => collector.collect_in_variant::<Self>("Full", None)
+            TrySendError::Full(ref val) => collector
+                .collect_in_variant::<Self>("Full", None)
                 .field(Inline, "wrapped", val)
                 .end_ref(),
-            TrySendError::Disconnected(ref val) => collector.collect_in_variant::<Self>("Disconnected", None)
+            TrySendError::Disconnected(ref val) => collector
+                .collect_in_variant::<Self>("Disconnected", None)
                 .field(Inline, "wrapped", val)
                 .end_ref(),
         }
@@ -1790,20 +2141,20 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::mpsc::TrySendError<T> {
 
 impl<T: HowMuchWhere> HowMuchWhere for std::sync::Arc<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_size_of_val(Inline, "inline_overhead", self)
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_size_of_val(Inline, "inline_overhead", self)
                     .end_ref()
-            )
+            })
             .shared_field_via("alloc", &**self, &RcBox(&**self));
     }
 }
 
 impl HowMuchWhere for std::sync::Barrier {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
+        collector
+            .collect_in_manual_struct::<Self>()
             .field_size_of_val(Inline, "inline_data", self)
             .field_const_size("alloc_data_unknown", 0, 1);
     }
@@ -1811,7 +2162,8 @@ impl HowMuchWhere for std::sync::Barrier {
 
 impl StaticallyKnown for std::sync::Barrier {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
+        collector
+            .collect_in_manual_struct::<Self>()
             .field_const_size("inline_data", mem::size_of::<Self>(), 0)
             .field_const_size("alloc_data_unknown", 0, 1);
     }
@@ -1819,7 +2171,8 @@ impl StaticallyKnown for std::sync::Barrier {
 
 impl HowMuchWhere for std::sync::Condvar {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
+        collector
+            .collect_in_manual_struct::<Self>()
             .field_size_of_val(Inline, "inline_data", self)
             .field_const_size("alloc_data_unknown", 0, 1);
     }
@@ -1827,7 +2180,8 @@ impl HowMuchWhere for std::sync::Condvar {
 
 impl StaticallyKnown for std::sync::Condvar {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
+        collector
+            .collect_in_manual_struct::<Self>()
             .field_const_size("inline_data", mem::size_of::<Self>(), 0)
             .field_const_size("alloc_data_unknown", 0, 1);
     }
@@ -1841,48 +2195,73 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::Mutex<T> {
         use std::sync::TryLockError;
 
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category(
-            "overhead",
-            |c| c
-                .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0)
-                .field_const_size("alloc_overhead_unknown", 0, 1)
-                .end_ref()
-        );
+        collector.category("overhead", |c| {
+            c.field_const_size(
+                "inline_overhead",
+                mem::size_of::<Self>() - mem::size_of::<T>(),
+                0,
+            )
+            .field_const_size("alloc_overhead_unknown", 0, 1)
+            .end_ref()
+        });
 
         match self.try_lock() {
-            Ok(value) => collector.field_size_of_val(Inline, "wrapped", &*value).end_ref(),
-            res@Err(TryLockError::Poisoned(_)) => mem::drop(res.unwrap()),  // We just want to generate the correct panic
-            Err(TryLockError::WouldBlock) => collector.field_const_size("data_lower_bound", mem::size_of::<T>(), 0).end_ref(),
+            Ok(value) => collector
+                .field_size_of_val(Inline, "wrapped", &*value)
+                .end_ref(),
+            res @ Err(TryLockError::Poisoned(_)) => mem::drop(res.unwrap()), // We just want to generate the correct panic
+            Err(TryLockError::WouldBlock) => collector
+                .field_const_size("data_lower_bound", mem::size_of::<T>(), 0)
+                .end_ref(),
         }
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::sync::Mutex<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0)
-                    .field_const_size("alloc_overhead_unknown", 0, 1)
-                    .end_ref()
-            )
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .field_const_size("alloc_overhead_unknown", 0, 1)
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
 
 impl<T: HowMuchWhere> HowMuchWhere for std::sync::PoisonError<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field(Inline, "wrapped", self.get_ref());
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::sync::PoisonError<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1895,32 +2274,41 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::RwLock<T> {
         use std::sync::TryLockError;
 
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category(
-            "overhead",
-            |c| c
-                .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0)
-                .field_const_size("alloc_overhead_unknown", 0, 1)
-                .end_ref()
-        );
+        collector.category("overhead", |c| {
+            c.field_const_size(
+                "inline_overhead",
+                mem::size_of::<Self>() - mem::size_of::<T>(),
+                0,
+            )
+            .field_const_size("alloc_overhead_unknown", 0, 1)
+            .end_ref()
+        });
 
         match self.try_read() {
-            Ok(value) => collector.field_size_of_val(Inline, "wrapped", &*value).end_ref(),
-            res@Err(TryLockError::Poisoned(_)) => mem::drop(res.unwrap()),  // We just want to generate the correct panic
-            Err(TryLockError::WouldBlock) => collector.field_const_size("data_lower_bound", mem::size_of::<T>(), 0).end_ref(),
+            Ok(value) => collector
+                .field_size_of_val(Inline, "wrapped", &*value)
+                .end_ref(),
+            res @ Err(TryLockError::Poisoned(_)) => mem::drop(res.unwrap()), // We just want to generate the correct panic
+            Err(TryLockError::WouldBlock) => collector
+                .field_const_size("data_lower_bound", mem::size_of::<T>(), 0)
+                .end_ref(),
         }
     }
 }
 
 impl<T: StaticallyKnown> StaticallyKnown for std::sync::RwLock<T> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category(
-                "overhead",
-                |c| c
-                    .field_const_size("inline_overhead", mem::size_of::<Self>() - mem::size_of::<T>(), 0)
-                    .field_const_size("alloc_overhead_unknown", 0, 1)
-                    .end_ref()
-            )
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size(
+                    "inline_overhead",
+                    mem::size_of::<Self>() - mem::size_of::<T>(),
+                    0,
+                )
+                .field_const_size("alloc_overhead_unknown", 0, 1)
+                .end_ref()
+            })
             .field_statically_known::<T>(Inline, "wrapped");
     }
 }
@@ -1930,10 +2318,12 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::TryLockError<T> {
         use std::sync::TryLockError;
 
         match *self {
-            TryLockError::Poisoned(ref p) => collector.collect_in_variant::<Self>("Poisoned", None)
+            TryLockError::Poisoned(ref p) => collector
+                .collect_in_variant::<Self>("Poisoned", None)
                 .field(Inline, "wrapped", p)
                 .end_ref(),
-            TryLockError::WouldBlock => collector.collect_in_variant::<Self>("WouldBlock", None)
+            TryLockError::WouldBlock => collector
+                .collect_in_variant::<Self>("WouldBlock", None)
                 .end_ref(),
         }
     }
@@ -1947,8 +2337,12 @@ impl HowMuchWhere for std::task::RawWaker {
 
 impl StaticallyKnown for std::task::RawWaker {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<Self>(), 0)
+                    .end_ref()
+            })
             .field_const_size("alloc_data_unknown", 0, 1);
     }
 }
@@ -1961,8 +2355,12 @@ impl HowMuchWhere for std::task::Waker {
 
 impl StaticallyKnown for std::task::Waker {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_manual_struct::<Self>()
-            .category("overhead", |c| c.field_const_size("inline_overhead", mem::size_of::<Self>(), 0).end_ref())
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<Self>(), 0)
+                    .end_ref()
+            })
             .field_const_size("alloc_data_unknown", 0, 1);
     }
 }
@@ -1973,12 +2371,13 @@ impl<T: HowMuchWhere> HowMuchWhere for std::task::Poll<T> {
 
         match *self {
             Poll::Ready(ref val) => {
-                collector.collect_in_variant::<Self>("Ready", None)
+                collector
+                    .collect_in_variant::<Self>("Ready", None)
                     .field(Inline, "wrapped", &val);
-            },
+            }
             Poll::Pending => {
                 collector.collect_in_variant::<Self>("Pending", None);
-            },
+            }
         }
     }
 }
@@ -2003,26 +2402,23 @@ macro_rules! static_size_alloc_unknown {
     }
 }
 
-static_size_alloc_unknown!{
+static_size_alloc_unknown! {
     {impl} {for std::thread::Builder}
     {impl<T>} {for std::thread::JoinHandle<T>}
     {impl<'scope, T>} {for std::thread::ScopedJoinHandle<'scope, T>}
     {impl} {for std::thread::Thread}
 }
 
-
 /// # This implementation has issues
 /// NOTE: Sadly it's impossible to retrieve the capacity of `IntoIter`
 impl<T: HowMuchWhere> HowMuchWhere for std::vec::IntoIter<T> {
     fn how_much_where_impl(&self, collector: &mut Collector) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
-        collector.category(
-            "overhead",
-            |c| c
-                .field_size_of_val(Inline, "inline_overhead", self)
+        collector.category("overhead", |c| {
+            c.field_size_of_val(Inline, "inline_overhead", self)
                 .field_const_size("unused_capacity_unknown", 0, 1)
                 .end_ref()
-        );
+        });
 
         // Sadly we can't access the data without cloning
         let mut len = 0usize;
@@ -2031,7 +2427,10 @@ impl<T: HowMuchWhere> HowMuchWhere for std::vec::IntoIter<T> {
             len += 1;
         }
 
-        collector.category("overhead", |c| c.field_const_size("data_padding", 0, cumulative_padding::<T>(len)).end_ref());
+        collector.category("overhead", |c| {
+            c.field_const_size("data_padding", 0, cumulative_padding::<T>(len))
+                .end_ref()
+        });
     }
 }
 
@@ -2045,7 +2444,8 @@ impl<'a, I: Iterator + StaticallyKnown + 'a> HowMuchWhere for std::vec::Splice<'
 
 impl<'a, I: Iterator + StaticallyKnown + 'a> StaticallyKnown for std::vec::Splice<'a, I> {
     fn how_much_where_impl_static(collector: &mut Collector) {
-        collector.collect_in_struct::<Self>()
+        collector
+            .collect_in_struct::<Self>()
             .field_statically_known::<std::vec::Drain<'a, I::Item>>(Inline, "drain")
             .field_statically_known::<I>(Inline, "replace_with");
     }
@@ -2080,7 +2480,7 @@ macro_rules! impl_for_fn {
     }
 }
 
-impl_for_fn!{A B C D E F G H I J K L M N O P}
+impl_for_fn! {A B C D E F G H I J K L M N O P}
 
 macro_rules! impl_for_tuple {
     {
@@ -2125,9 +2525,9 @@ macro_rules! impl_for_tuple {
 
 // NOTE: This has to be in reverse because the recursion to do the next, smaller tuple removes the
 // *first* thing in the invocation, as there is no (sane) way to remove the last.
-impl_for_tuple!{
+impl_for_tuple! {
     P "15" 15 O "14" 14 N "13" 13 M "12" 12 L "11" 11 K "10" 10 J "9" 9 I "8" 8
-    H "7" 7 G "6" 6 F "5" 5 E "4" 4 D "3" 3 C "2" 2 
+    H "7" 7 G "6" 6 F "5" 5 E "4" 4 D "3" 3 C "2" 2
     B "snd" 1 A "fst" 0
 }
 
@@ -2268,7 +2668,7 @@ macro_rules! how_much_where_by_size_of {
     };
 }
 
-how_much_where_by_size_of!{
+how_much_where_by_size_of! {
     bool, char, f32, f64, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize,
     std::{
         alloc::{Layout, LayoutError, System}, any::TypeId,
@@ -2296,12 +2696,12 @@ how_much_where_by_size_of!{
                 IterMut<'a, K: ('a), V: ('a)>, Keys<'a, K: ('a), V: ('a)>,
                 OccupiedEntry<'a, K: ('a), V: ('a)>, RandomState,
                 VacantEntry<'a, K: ('a), V: ('a)>, Values<'a, K: ('a), V: ('a)>,
-                ValuesMut<'a, K: ('a), V: ('a)>, 
+                ValuesMut<'a, K: ('a), V: ('a)>,
             },
             hash_set::{
                 Difference<'a, T: ('a), S: ('a)>, Drain<'a, T: ('a)>,
                 Intersection<'a, T: ('a), S: ('a)>, Iter<'a, T: ('a)>,
-                SymmetricDifference<'a, T: ('a), S: ('a)>, Union<'a, T: ('a), S: ('a)>, 
+                SymmetricDifference<'a, T: ('a), S: ('a)>, Union<'a, T: ('a), S: ('a)>,
             },
             linked_list::{Iter<'a, T: ('a)>, IterMut<'a, T: ('a)>},
             vec_deque::{Drain<'a, T: ('a)>, Iter<'a, T: ('a)>, IterMut<'a, T: ('a)>},
@@ -2344,7 +2744,7 @@ how_much_where_by_size_of!{
     }
 }
 
-how_much_where_by_size_of!{
+how_much_where_by_size_of! {
     std::{
         slice::{
             Chunks<'a, T: ('a)>, ChunksExact<'a, T: ('a)>, ChunksExactMut<'a, T: ('a)>,
@@ -2523,7 +2923,7 @@ macro_rules! opaque_wrapper {
     };
 }
 
-opaque_wrapper!{
+opaque_wrapper! {
     std::{
         io::{Bytes<R>, Lines<R>, Split<B>},
         iter::{

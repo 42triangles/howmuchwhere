@@ -39,7 +39,7 @@ fn test_primitive() {
     assert_eq!(
         (3u16).how_much_where(),
         CollectionResult {
-            root: hash_map!{ path![:u16.value] => 2 },
+            root: hash_map! { path![:u16.value] => 2 },
             shared: HashMap::new(),
         }
     );
@@ -53,7 +53,7 @@ fn test_vec_of_primitive() {
     assert_eq!(
         vec.how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:(Vec<u16>)+overhead.inline_overhead] => mem::size_of::<Vec<u16>>(),
                 path![:(Vec<u16>)+overhead.unused_capacity] => 2 * 2,
                 path![:(Vec<u16>).data:u16.value] => 2 * 2,
@@ -77,7 +77,7 @@ fn test_derive_fieldless_enum() {
     assert_eq!(
         Test::A.how_much_where(),
         CollectionResult {
-            root: hash_map!{ path![:Test.data] => 1 },
+            root: hash_map! { path![:Test.data] => 1 },
             shared: HashMap::new(),
         }
     );
@@ -97,7 +97,7 @@ fn test_derive_enum_c() {
     assert_eq!(
         Test::A.how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test/A+overhead.internal_padding_and_unused] => mem::size_of::<Test>() - mem::size_of::<c_int>(),
                 path![:Test/A+overhead.tag_size] => mem::size_of::<c_int>(),
             },
@@ -108,7 +108,7 @@ fn test_derive_enum_c() {
     assert_eq!(
         Test::B(0).how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test/B+overhead.internal_padding_and_unused] => mem::size_of::<Test>() - mem::size_of::<c_int>() - 1,
                 path![:Test/B+overhead.tag_size] => mem::size_of::<c_int>(),
                 path![:Test/B.wrapped :u8.value] => 1,
@@ -132,7 +132,7 @@ fn test_derive_enum_u8() {
     assert_eq!(
         Test::A.how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test/A+overhead.internal_padding_and_unused] => 1,
                 path![:Test/A+overhead.tag_size] => 1,
             },
@@ -143,7 +143,7 @@ fn test_derive_enum_u8() {
     assert_eq!(
         Test::B(0).how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test/B+overhead.tag_size] => 1,
                 path![:Test/B.wrapped :u8.value] => 1,
             },
@@ -156,10 +156,11 @@ fn test_derive_enum_u8() {
 fn test_struct() {
     #[derive(HowMuchWhere)]
     #[howmuchwhere(__hmw_internal_use)]
-    #[repr(C)]  // so we know the padding
+    #[repr(C)] // so we know the padding
     struct Test {
         x: u8,
-        #[howmuchwhere(category="c")] y: u16,
+        #[howmuchwhere(category = "c")]
+        y: u16,
     }
 
     let test = Test { x: 1, y: 2 };
@@ -169,7 +170,7 @@ fn test_struct() {
     assert_eq!(
         test.how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test.x :u8.value] => 1,
                 path![:Test+c.y :u16.value] => 2,
                 path![:Test+overhead.internal_padding] => 1,
@@ -186,7 +187,7 @@ fn test_shared_reanchor_root() {
     assert_eq!(
         Rc::new(0usize).how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:(Rc<usize>)+overhead.inline_overhead] => PTR_SIZE,
                 path![:(Rc<usize>).alloc :(RcBox<usize>)+overhead.alloc_overhead] => 2 * PTR_SIZE,
                 path![:(Rc<usize>).alloc :(RcBox<usize>).referenced :usize.value] => PTR_SIZE,
@@ -216,7 +217,7 @@ fn test_shared_cycle() {
 
     assert_eq!(
         main.how_much_where().root,
-        hash_map!{ path![:Main+overhead.inline_overhead] => PTR_SIZE }
+        hash_map! { path![:Main+overhead.inline_overhead] => PTR_SIZE }
     );
 
     // The cycle gets inlined from `other` into `main`
@@ -227,7 +228,7 @@ fn test_shared_cycle() {
         PTR_SIZE +  // main Rc inline overhead (alloc overhead is shared!)
             PTR_SIZE * 3 * 2 +  // allocated Rc overhead
             PTR_SIZE +  // refcell overhead
-            0  // option doesn't take up extra space because of the non-null pointer inside of `Rc`
+            0 // option doesn't take up extra space because of the non-null pointer inside of `Rc`
     );
 }
 
@@ -243,7 +244,7 @@ fn test_with() {
     assert_eq!(
         Test { x: 3 }.how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test.x :u16.value] => mem::size_of::<u16>(),
             },
             shared: HashMap::new(),
@@ -263,7 +264,7 @@ fn test_with_constructor() {
     assert_eq!(
         Test { x: &3 }.how_much_where(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test.x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
                 path![:Test.x :(Follow<u8, UniqueFollow>).referenced :u8.value] => mem::size_of::<u8>(),
             },
@@ -284,7 +285,7 @@ fn test_with_statically_known() {
     assert_eq!(
         Test::how_much_where_static(),
         CollectionResult {
-            root: hash_map!{
+            root: hash_map! {
                 path![:Test._x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
                 path![:Test._x :(Follow<u8, UniqueFollow>).referenced :u8.value] => mem::size_of::<u8>(),
             },
