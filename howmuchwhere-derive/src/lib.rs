@@ -42,6 +42,131 @@ struct FieldOpts {
     statically_known: Flag,
     category: Option<Ident>,
     unsafe_follow: Flag,
+    with: Option<syn::Type>,
+    constructor: Option<syn::Path>,
+    copy: Flag,
+    clone: Flag,
+    #[darling(rename = "unsafe")]
+    unsafe_: Flag,
+}
+
+fn derive_fields(
+    crate_: &TokenStream2,
+    opts: &TopLevelOpts,
+    allow_nonstatic: bool,
+    source: TokenStream2,
+    access_prefix: TokenStream2,
+    single_unnamed: bool,
+    fields: impl Iterator<Item = (TokenStream2, Field)>
+) -> darling::Result<TokenStream2> {
+    let fields: Vec<TokenStream2> =
+        fields
+            .map(|(name, field)| FieldOpts::from_field(&field).map(|field_opts| {
+                let field_name = match field_opts.rename {
+                    None if single_unnamed => quote!{ wrapped },
+                    None => name.clone(),
+                    Some(renamed) => quote!{ #renamed },
+                };
+                let field_name = quote!{ stringify!(#field_name) };
+
+                enum Mode<'a> {
+                    Normal,
+                    SizeOfVal,
+                    SizeOf,
+                    StaticallyKnown,
+                    WithType {
+                        ty: &'a syn::Type,
+                        statically_known: bool,
+                    },
+                }
+
+                let flag_mode = |flag: &Flag, mode| if flag.is_present() {
+                    Some(mode)
+                } else {
+                    None
+                };
+
+                let mode = flag_mode(&field_opts.via_size_of_val, Mode::SizeOfVal)
+                    .or_else(|| flag_mode(&field_opts.via_size_of, Mode::SizeOf))
+                    .or_else(|| flag_mode(&field_opts.statically_known, Mode::StaticallyKnown))
+                    .or_else(|| flag_mode(&opts.via_size_of_val, Mode::SizeOfVal))
+                    .or_else(|| flag_mode(&opts.via_size_of, Mode::SizeOf))
+                    .or_else(|| flag_mode(&opts.statically_known, Mode::StaticallyKnown))
+                    .unwrap_or_else(|| Mode::Normal);
+
+                let mode = match field_opts.with {
+                    Some(ref ty) if matches!(mode, Mode::StaticallyKnown) =>
+                        Mode::WithType { ty, statically_known: true },
+                    Some(ref ty) => Mode::WithType { ty, statically_known: false },
+                    None => mode,
+                };
+
+                let access = quote!{ & #access_prefix #name };
+                let ty = &field.ty;
+
+                let out = match mode {
+                    Mode::Normal if allow_nonstatic =>
+                        quote!{ .field(#crate_::Inline, #field_name, #access) },
+                    Mode::Normal => quote!{
+                        .field_statically_known::<#ty>(#crate_::Inline, #field_name)
+                    },
+                    Mode::SizeOfVal if allow_nonstatic =>
+                        quote!{ .field_size_of_val(#crate_::Inline, #field_name, #access) },
+                    Mode::SizeOf => quote!{
+                        .field_const_size(#field_name, ::core::mem::size_of::<#ty>(), 0)
+                    },
+                    Mode::StaticallyKnown => quote!{
+                        .field_statically_known::<#ty>(#crate_::Inline, #field_name)
+                    },
+                    Mode::WithType { ty, statically_known } if statically_known || !allow_nonstatic => {
+                        quote!{ .field_statically_known::<#ty>(#crate_::Inline, #field_name) }
+                    },
+                    Mode::WithType { ty, .. } => {
+                        let access = if field_opts.copy.is_present() {
+                            quote!{ *#access }
+                        } else if field_opts.clone.is_present() {
+                            quote!{ #access.clone() }
+                        } else {
+                            quote!{ #access }
+                        };
+
+                        let convert = match field_opts.constructor {
+                            Some(path) => quote!{ <#ty>::#path(#access) },
+                            None => quote!{ <#ty as ::core::convert::From<_>>::from(#access) },
+                        };
+
+                        let convert = if field_opts.unsafe_.is_present() {
+                            quote!{ unsafe { #convert } }
+                        } else {
+                            convert
+                        };
+
+                        quote!{ .field(#crate_::Inline, #field_name, &#convert) }
+                    },
+                    _ => {
+                        return Error::custom(
+                            "Cannot be used in a statically known only context"
+                        )
+                            .with_span(&field)
+                            .write_errors()
+                            .into();
+                    },
+                };
+
+                match field_opts.category {
+                    None => out,
+                    Some(category) => quote!{
+                        .category(stringify!(#category), |c| c #out.end_ref())
+                    },
+                }
+            }))
+            .collect::<Result<_, _>>()?;
+
+    Ok(
+        quote!{
+            #source #(#fields)*;
+        }
+    )
 }
 
 fn derive_inner(
@@ -68,118 +193,9 @@ fn derive_inner(
     };
 
     let struct_impl = |source, access_prefix, fields| {
-        fn inner(
-            crate_: &TokenStream2,
-            opts: &TopLevelOpts,
-            allow_nonstatic: bool,
-            source: TokenStream2,
-            access_prefix: TokenStream2,
-            single_unnamed: bool,
-            fields: impl Iterator<Item = (TokenStream2, Field)>
-        ) -> darling::Result<TokenStream2> {
-            let fields: Vec<TokenStream2> =
-                fields
-                    .map(|(name, field)| FieldOpts::from_field(&field).map(|field_opts| {
-                        let field_name = match field_opts.rename {
-                            None if single_unnamed => quote!{ wrapped },
-                            None => name.clone(),
-                            Some(renamed) => quote!{ #renamed },
-                        };
-                        let field_name = quote!{ stringify!(#field_name) };
-
-                        enum Mode {
-                            Normal,
-                            SizeOfVal,
-                            SizeOf,
-                            StaticallyKnown,
-                            UnsafeFollow,
-                            UnsafeFollowSizeOfVal,
-                        }
-
-                        let (blame, mode) = if field_opts.unsafe_follow.is_present() {
-                            if field_opts.via_size_of_val.is_present() {
-                                (&field_opts.via_size_of_val, Mode::UnsafeFollowSizeOfVal)
-                            } else if opts.via_size_of_val.is_present() {
-                                (&opts.via_size_of_val, Mode::UnsafeFollowSizeOfVal)
-                            } else {
-                                (&field_opts.unsafe_follow, Mode::UnsafeFollow)
-                            }
-                        } else if field_opts.via_size_of_val.is_present() {
-                            (&field_opts.via_size_of_val, Mode::SizeOfVal)
-                        } else if field_opts.via_size_of.is_present() {
-                            (&field_opts.via_size_of, Mode::SizeOf)
-                        } else if field_opts.statically_known.is_present() {
-                            (&field_opts.statically_known, Mode::StaticallyKnown)
-                        } else if opts.via_size_of_val.is_present() {
-                            (&opts.via_size_of_val, Mode::SizeOfVal)
-                        } else if opts.via_size_of.is_present() {
-                            (&opts.via_size_of, Mode::SizeOf)
-                        } else if opts.statically_known.is_present() {
-                            (&opts.statically_known, Mode::StaticallyKnown)
-                        } else {
-                            // the blame can be anything as we can't know within the proc macro if
-                            // normal access will fail anyway
-                            (&opts.__hmw_internal_use, Mode::Normal)
-                        };
-
-                        let access = quote!{ & #access_prefix #name };
-                        let followptr = quote!{ unsafe { &* #access_prefix #name } };
-                        let ty = field.ty;
-
-                        let out = match mode {
-                            Mode::Normal if allow_nonstatic =>
-                                quote!{ .field(#crate_::Inline, #field_name, #access) },
-                            Mode::Normal => quote!{
-                                .field_statically_known::<#ty>(#crate_::Inline, #field_name)
-                            },
-                            Mode::SizeOfVal if allow_nonstatic =>
-                                quote!{ .field_size_of_val(#crate_::Inline, #field_name, #access) },
-                            Mode::SizeOf => quote!{
-                                .field_const_size(#field_name, ::core::mem::size_of::<#ty>(), 0)
-                            },
-                            Mode::StaticallyKnown => quote!{
-                                .field_statically_known::<#ty>(#crate_::Inline, #field_name)
-                            },
-                            Mode::UnsafeFollow if allow_nonstatic => quote!{
-                                .field_const_size(#field_name, ::core::mem::size_of::<#ty>(), 0)
-                                .field(#crate_::Allocated, #field_name, #followptr)
-                            },
-                            Mode::UnsafeFollow => quote!{
-                                .field_const_size(#field_name, ::core::mem::size_of::<#ty>(), 0)
-                                .field_statically_known::<#ty>(#crate_::Allocated, #field_name)
-                            },
-                            Mode::UnsafeFollowSizeOfVal if allow_nonstatic => quote!{
-                                .field_const_size(#field_name, ::core::mem::size_of::<#ty>(), 0)
-                                .field_size_of_val(#crate_::Allocated, #field_name, #followptr)
-                            },
-                            _ => {
-                                return Error::custom(
-                                    "Cannot be used in a statically known only context"
-                                )
-                                    .with_span(blame)
-                                    .write_errors()
-                                    .into();
-                            },
-                        };
-
-                        match field_opts.category {
-                            None => out,
-                            Some(category) => quote!{
-                                .category(stringify!(#category), |c| c #out.end_ref())
-                            },
-                        }
-                    }))
-                    .collect::<Result<_, _>>()?;
-
-            Ok(
-                quote!{
-                    #source #(#fields)*;
-                }
-            )
-        }
 
         match fields {
-            Fields::Named(named) => inner(
+            Fields::Named(named) => derive_fields(
                 &crate_,
                 &opts,
                 allow_nonstatic,
@@ -192,7 +208,7 @@ fn derive_inner(
                         (quote!{ #ident }, f)
                     })
             ),
-            Fields::Unnamed(unnamed) => inner(
+            Fields::Unnamed(unnamed) => derive_fields(
                 &crate_,
                 &opts,
                 allow_nonstatic,
@@ -202,7 +218,7 @@ fn derive_inner(
                 unnamed.unnamed.into_iter().enumerate().map(|(i, f)| (format!("{i}").parse().unwrap(), f))
             ),
             Fields::Unit =>
-                inner(&crate_, &opts, allow_nonstatic, source, access_prefix, false, std::iter::empty()),
+                derive_fields(&crate_, &opts, allow_nonstatic, source, access_prefix, false, std::iter::empty()),
         }
     };
 

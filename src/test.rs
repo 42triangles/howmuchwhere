@@ -230,3 +230,65 @@ fn test_shared_cycle() {
             0  // option doesn't take up extra space because of the non-null pointer inside of `Rc`
     );
 }
+
+#[test]
+fn test_with() {
+    #[derive(HowMuchWhere)]
+    #[howmuchwhere(__hmw_internal_use)]
+    struct Test {
+        #[howmuchwhere(with = "u16", copy)]
+        x: u8,
+    }
+
+    assert_eq!(
+        Test { x: 3 }.how_much_where(),
+        CollectionResult {
+            root: hash_map!{
+                path![:Test.x :u16.value] => mem::size_of::<u16>(),
+            },
+            shared: HashMap::new(),
+        }
+    );
+}
+
+#[test]
+fn test_with_constructor() {
+    #[derive(HowMuchWhere)]
+    #[howmuchwhere(__hmw_internal_use)]
+    struct Test<'a> {
+        #[howmuchwhere(with = "Follow<'_, u8, UniqueFollow>", constructor = "from_ref")]
+        x: &'a u8,
+    }
+
+    assert_eq!(
+        Test { x: &3 }.how_much_where(),
+        CollectionResult {
+            root: hash_map!{
+                path![:Test.x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
+                path![:Test.x :(Follow<u8, UniqueFollow>).referenced :u8.value] => mem::size_of::<u8>(),
+            },
+            shared: HashMap::new(),
+        }
+    );
+}
+
+#[test]
+fn test_with_statically_known() {
+    #[derive(HowMuchWhere, StaticallyKnown)]
+    #[howmuchwhere(__hmw_internal_use)]
+    struct Test {
+        #[howmuchwhere(with = "Follow<'_, u8, UniqueFollow>", statically_known)]
+        _x: u8,
+    }
+
+    assert_eq!(
+        Test::how_much_where_static(),
+        CollectionResult {
+            root: hash_map!{
+                path![:Test._x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
+                path![:Test._x :(Follow<u8, UniqueFollow>).referenced :u8.value] => mem::size_of::<u8>(),
+            },
+            shared: HashMap::new(),
+        }
+    );
+}

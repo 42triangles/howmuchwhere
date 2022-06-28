@@ -345,6 +345,11 @@ impl StructCollector<'_, '_> {
         self
     }
 
+    pub fn with_ref(&mut self, f: impl FnOnce(&mut Self)) -> &mut Self {
+        f(self);
+        self
+    }
+
     pub fn end_ref(&mut self) { }
 
     fn push_padding(&mut self) {
@@ -406,71 +411,147 @@ impl Drop for VariantCollector<'_, '_> {
     }
 }
 
+fn finalise(run: impl Fn(&mut Collector)) -> CollectionResult {
+    let mut shared = HashMap::new();
+    let mut collector = Collector::new(None, &mut shared);
+
+    run(&mut collector);
+
+    let mut data = collector.data;
+
+    // This is... Not an efficient way to go about it, but it's difficult to actually do it
+    // efficiently because this needs to be able to modify the `shared` HashMap while reading from
+    // it.
+    // And we don't want to visit things twice ideally, either.
+    let pointers = shared.keys().copied().collect::<Vec<_>>();
+
+    for i in pointers {
+        let &mut (ref mut paths, ref mut shared_data) = shared.get_mut(&i).unwrap();
+
+        let mut removed = false;
+
+        if shared_data.is_empty() {
+            shared.remove(&i);
+            removed = true;
+        } else if paths.len() != 1 {
+            // Keep it as is
+        } else {
+            let (paths, shared_data) = shared.remove(&i).unwrap();
+            removed = true;
+
+            let (path_anchor, path) = paths.into_iter().next().unwrap();
+            let collection = match path_anchor {
+                None => &mut data,
+                Some(ptr) =>
+                // The pointer is always in `shared` (unless there's a bug), since for an entry
+                // to have been removed before it would have to be empty (in which case it
+                // cannot contain anything to reference this) or only have one anchor (in which
+                // case only a cycle could cause this, but since we collect from a root object,
+                // a cycle where each part is only anchored in another part of the cycle is not
+                // possible).
+                {
+                    &mut shared.get_mut(&ptr).unwrap().1
+                }
+            };
+
+            for (mut path_here, byte_count) in shared_data {
+                path_here.splice(0..0, path.iter().copied());
+                *collection.entry(path_here).or_insert(0) += byte_count;
+            }
+        }
+
+        // We are potentially removing *A LOT* of things
+        if removed {
+            if shared.len() < shared.capacity() / 2 {
+                shared.shrink_to_fit();
+            }
+        }
+    }
+
+    CollectionResult {
+        root: data,
+        shared: shared,
+    }
+}
+
 pub trait HowMuchWhere {
     fn how_much_where_impl(&self, collector: &mut Collector);
 
     fn how_much_where(&self) -> CollectionResult {
-        let mut shared = HashMap::new();
-        let mut collector = Collector::new(None, &mut shared);
-        self.how_much_where_impl(&mut collector);
-        let mut data = collector.data;
-
-        // This is... Not an efficient way to go about it, but it's difficult to actually do it
-        // efficiently because this needs to be able to modify the `shared` HashMap while reading
-        // from it.
-        // And we don't want to visit things twice ideally, either.
-        let pointers = shared.keys().copied().collect::<Vec<_>>();
-
-        for i in pointers {
-            let &mut (ref mut paths, ref mut shared_data) = shared.get_mut(&i).unwrap();
-
-            let mut removed = false;
-            
-            if shared_data.is_empty() {
-                shared.remove(&i);
-                removed = true;
-            } else if paths.len() != 1 {
-                // Keep it as is
-            } else {
-                let (paths, shared_data) = shared.remove(&i).unwrap();
-                removed = true;
-
-                let (path_anchor, path) = paths.into_iter().next().unwrap();
-                let collection = match path_anchor {
-                    None => &mut data,
-                    Some(ptr) =>
-                        // The pointer is always in `shared` (unless there's a bug), since for an
-                        // entry to have been removed before it would have to be empty (in which
-                        // case it cannot contain anything to reference this) or only have one
-                        // anchor (in which case only a cycle could cause this, but since we
-                        // collect from a root object, a cycle where each part is only anchored in
-                        // another part of the cycle is not possible).
-                        &mut shared.get_mut(&ptr).unwrap().1
-                };
-
-                for (mut path_here, byte_count) in shared_data {
-                    path_here.splice(0..0, path.iter().copied());
-                    *collection.entry(path_here).or_insert(0) += byte_count;
-                }
-            }
-
-            // We are potentially removing *A LOT* of things
-            if removed {
-                if shared.len() < shared.capacity() / 2 {
-                    shared.shrink_to_fit();
-                }
-            }
-        }
-
-        CollectionResult {
-            root: data,
-            shared: shared,
-        }
+        finalise(|collector| self.how_much_where_impl(collector))
     }
 }
 
 pub trait StaticallyKnown: HowMuchWhere + Sized {
     fn how_much_where_impl_static(collector: &mut Collector);
+
+    fn how_much_where_static() -> CollectionResult {
+        finalise(Self::how_much_where_impl_static)
+    }
+}
+
+mod sealed {
+    pub trait FollowMode {
+        const LOC: super::Location;
+    }
+}
+
+pub trait FollowMode: sealed::FollowMode { }
+
+pub struct SharedFollow;
+impl sealed::FollowMode for SharedFollow {
+    const LOC: Location = Shared;
+}
+impl FollowMode for SharedFollow {}
+
+pub struct UniqueFollow;
+impl sealed::FollowMode for UniqueFollow {
+    const LOC: Location = Allocated;
+}
+impl FollowMode for UniqueFollow {}
+
+pub struct Follow<'a, T: ?Sized, Mode: FollowMode>(pub &'a T, std::marker::PhantomData<Mode>);
+
+impl<'a, T: ?Sized, M: FollowMode> Follow<'a, T, M> {
+    pub fn from_ref(x: &'a &T) -> Self {
+        Follow(*x, std::marker::PhantomData)
+    }
+
+    pub fn from_ref_mut(x: &'a &mut T) -> Self {
+        Follow(*x, std::marker::PhantomData)
+    }
+
+    pub unsafe fn from_ptr(x: &'a *const T) -> Self {
+        Follow(&**x, std::marker::PhantomData)
+    }
+
+    pub unsafe fn from_ptr_mut(x: &'a *mut T) -> Self {
+        Follow(&**x, std::marker::PhantomData)
+    }
+}
+
+impl<T: ?Sized + HowMuchWhere, M: FollowMode> HowMuchWhere for Follow<'_, T, M> {
+    fn how_much_where_impl(&self, collector: &mut Collector) {
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<&T>(), 0)
+                    .end_ref()
+            })
+            .field(M::LOC, "referenced", &*self.0);
+    }
+}
+
+impl<'a, T: ?Sized + StaticallyKnown + 'a> StaticallyKnown for Follow<'a, T, UniqueFollow> {
+    fn how_much_where_impl_static(collector: &mut Collector) {
+        collector
+            .collect_in_manual_struct::<Self>()
+            .category("overhead", |c| {
+                c.field_const_size("inline_overhead", mem::size_of::<&T>(), 0)
+                    .end_ref()
+            })
+            .field_statically_known::<T>(Allocated, "referenced");
+    }
 }
 
 fn collection_data_without_padding<'a, T: HowMuchWhere + ?Sized + 'a>(
