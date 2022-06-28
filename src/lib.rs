@@ -121,7 +121,7 @@ impl std::fmt::Debug for CollectionResult {
 
 #[derive(HowMuchWhere)]
 #[howmuchwhere(__hmw_internal_use)]
-pub struct Collector<'a> {
+pub struct Collector<'a, 'b, Ctx: ?Sized> {
     #[howmuchwhere(category = "state")]
     parent_shared: Option<OpaquePointer>,
     #[howmuchwhere(category = "state")]
@@ -130,22 +130,26 @@ pub struct Collector<'a> {
     data: Collection,
     #[howmuchwhere(category = "data")]
     shared: &'a mut HashMap<OpaquePointer, (Vec<GeneralPath>, Collection)>,
+    #[howmuchwhere(category = "context")]
+    ctx: &'b Ctx,
 }
 
-impl<'a> Collector<'a> {
+impl<'a, 'b, Ctx: ?Sized> Collector<'a, 'b, Ctx> {
     fn new(
         parent_shared: Option<OpaquePointer>,
         shared: &'a mut HashMap<OpaquePointer, (Vec<GeneralPath>, Collection)>,
+        ctx: &'b Ctx,
     ) -> Self {
         Collector {
             parent_shared,
             current_prefix: Vec::new(),
             data: HashMap::new(),
             shared,
+            ctx,
         }
     }
 
-    pub fn collect_shared<T: ?Sized>(&mut self, pointer: *const T, f: impl FnOnce(&mut Collector)) {
+    pub fn collect_shared<T: ?Sized>(&mut self, pointer: *const T, f: impl FnOnce(&mut Collector<Ctx>)) {
         let pointer = OpaquePointer::from_ptr(pointer);
 
         let mut has_to_fill = false;
@@ -159,13 +163,13 @@ impl<'a> Collector<'a> {
             .push((self.parent_shared, self.current_prefix.clone()));
 
         if has_to_fill {
-            let mut collector = Collector::new(Some(pointer), self.shared);
+            let mut collector = Collector::new(Some(pointer), self.shared, self.ctx);
             f(&mut collector);
             self.shared.get_mut(&pointer).unwrap().1 = collector.data;
         }
     }
 
-    fn collect_struct_with<T: ?Sized>(&mut self, size: usize) -> StructCollector<'a, '_> {
+    fn collect_struct_with<T: ?Sized>(&mut self, size: usize) -> StructCollector<'a, 'b, '_, Ctx> {
         self.current_prefix
             .push((Kind::Type, std::any::type_name::<T>()));
 
@@ -177,15 +181,15 @@ impl<'a> Collector<'a> {
         }
     }
 
-    pub fn collect_in_manual_struct<T: ?Sized>(&mut self) -> StructCollector<'a, '_> {
+    pub fn collect_in_manual_struct<T: ?Sized>(&mut self) -> StructCollector<'a, 'b, '_, Ctx> {
         self.collect_struct_with::<T>(0)
     }
 
-    pub fn collect_in_unsized_struct<T: ?Sized>(&mut self, value: &T) -> StructCollector<'a, '_> {
+    pub fn collect_in_unsized_struct<T: ?Sized>(&mut self, value: &T) -> StructCollector<'a, 'b, '_, Ctx> {
         self.collect_struct_with::<T>(mem::size_of_val(value))
     }
 
-    pub fn collect_in_struct<T: Sized>(&mut self) -> StructCollector<'a, '_> {
+    pub fn collect_in_struct<T: Sized>(&mut self) -> StructCollector<'a, 'b, '_, Ctx> {
         self.collect_struct_with::<T>(mem::size_of::<T>())
     }
 
@@ -194,7 +198,7 @@ impl<'a> Collector<'a> {
         variant: &'static str,
         size: usize,
         mode: StructMode,
-    ) -> VariantCollector<'a, '_> {
+    ) -> VariantCollector<'a, 'b, '_, Ctx> {
         self.current_prefix
             .push((Kind::Type, std::any::type_name::<T>()));
         self.current_prefix.push((Kind::Variant, variant));
@@ -210,7 +214,7 @@ impl<'a> Collector<'a> {
     pub fn collect_in_manual_variant<T: ?Sized>(
         &mut self,
         variant: &'static str,
-    ) -> VariantCollector<'a, '_> {
+    ) -> VariantCollector<'a, 'b, '_, Ctx> {
         self.collect_variant_with::<T>(variant, 0, StructMode::VariantKnownTag)
     }
 
@@ -222,7 +226,7 @@ impl<'a> Collector<'a> {
         &mut self,
         variant: &'static str,
         tag_size: Option<usize>,
-    ) -> VariantCollector<'a, '_> {
+    ) -> VariantCollector<'a, 'b, '_, Ctx> {
         let mut out = self.collect_variant_with::<T>(
             variant,
             mem::size_of::<T>(),
@@ -254,6 +258,10 @@ impl<'a> Collector<'a> {
             self.data.insert(self.current_prefix.clone(), size);
         }
     }
+
+    pub fn ctx(&self) -> &'b Ctx {
+        self.ctx
+    }
 }
 
 #[derive(
@@ -279,8 +287,9 @@ enum StructMode {
 
 #[derive(HowMuchWhere, StaticallyKnown)]
 #[howmuchwhere(__hmw_internal_use)]
-pub struct StructCollector<'a: 'b, 'b> {
-    collector: &'b mut Collector<'a>,
+#[howmuchwhere(where = "Ctx: 'b")]
+pub struct StructCollector<'a: 'c, 'b: 'c, 'c, Ctx: ?Sized> {
+    collector: &'c mut Collector<'a, 'b, Ctx>,
     #[howmuchwhere(category = "detect_padding")]
     full_size: usize,
     #[howmuchwhere(category = "detect_padding")]
@@ -289,12 +298,12 @@ pub struct StructCollector<'a: 'b, 'b> {
     mode: StructMode,
 }
 
-impl StructCollector<'_, '_> {
+impl<Ctx: ?Sized> StructCollector<'_, '_, '_, Ctx> {
     pub fn field_generic(
         &mut self,
         name: &'static str,
         shared: Option<*const u8>,
-        f: impl FnOnce(&mut Collector),
+        f: impl FnOnce(&mut Collector<Ctx>),
     ) -> &mut Self {
         self.collector.current_prefix.push((Kind::Field, name));
         match shared {
@@ -309,7 +318,7 @@ impl StructCollector<'_, '_> {
         &mut self,
         name: &'static str,
         shared: *const T,
-        f: impl FnOnce(&mut Collector),
+        f: impl FnOnce(&mut Collector<Ctx>),
     ) -> &mut Self {
         self.field_generic(name, Some(shared as *const u8), f)
     }
@@ -323,7 +332,7 @@ impl StructCollector<'_, '_> {
         &mut self,
         loc: Location,
         name: &'static str,
-        field: &(impl HowMuchWhere + ?Sized),
+        field: &(impl HowMuchWhere<Ctx> + ?Sized),
     ) -> &mut Self {
         match loc {
             Inline => {
@@ -341,7 +350,7 @@ impl StructCollector<'_, '_> {
         &mut self,
         name: &'static str,
         shared: *const T,
-        field: &(impl HowMuchWhere + ?Sized),
+        field: &(impl HowMuchWhere<Ctx> + ?Sized),
     ) -> &mut Self {
         self.field_generic_shared(name, shared, |this| field.how_much_where_impl(this))
     }
@@ -381,7 +390,7 @@ impl StructCollector<'_, '_> {
         }
     }
 
-    pub fn field_statically_known<T: StaticallyKnown>(
+    pub fn field_statically_known<T: StaticallyKnown<Ctx>>(
         &mut self,
         loc: Location,
         name: &'static str,
@@ -430,7 +439,7 @@ impl StructCollector<'_, '_> {
     }
 }
 
-impl Drop for StructCollector<'_, '_> {
+impl<Ctx: ?Sized> Drop for StructCollector<'_, '_, '_, Ctx> {
     fn drop(&mut self) {
         self.push_padding();
 
@@ -440,23 +449,24 @@ impl Drop for StructCollector<'_, '_> {
 
 #[derive(HowMuchWhere, StaticallyKnown)]
 #[howmuchwhere(__hmw_internal_use)]
-pub struct VariantCollector<'a: 'b, 'b>(StructCollector<'a, 'b>);
+#[howmuchwhere(where = "Ctx: 'b")]
+pub struct VariantCollector<'a: 'c, 'b: 'c, 'c, Ctx: ?Sized>(StructCollector<'a, 'b, 'c, Ctx>);
 
-impl<'a, 'b> ops::Deref for VariantCollector<'a, 'b> {
-    type Target = StructCollector<'a, 'b>;
+impl<'a: 'c, 'b: 'c, 'c, Ctx: ?Sized> ops::Deref for VariantCollector<'a, 'b, 'c, Ctx> {
+    type Target = StructCollector<'a, 'b, 'c, Ctx>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl ops::DerefMut for VariantCollector<'_, '_> {
+impl<Ctx: ?Sized> ops::DerefMut for VariantCollector<'_, '_, '_, Ctx> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl Drop for VariantCollector<'_, '_> {
+impl<Ctx: ?Sized> Drop for VariantCollector<'_, '_, '_, Ctx> {
     fn drop(&mut self) {
         self.push_padding(); // The padding has to be pushed before the variant is left
 
@@ -464,9 +474,9 @@ impl Drop for VariantCollector<'_, '_> {
     }
 }
 
-fn finalise(run: impl Fn(&mut Collector)) -> CollectionResult {
+fn finalise<Ctx: ?Sized>(ctx: &Ctx, run: impl Fn(&mut Collector<Ctx>)) -> CollectionResult {
     let mut shared = HashMap::new();
-    let mut collector = Collector::new(None, &mut shared);
+    let mut collector = Collector::new(None, &mut shared, ctx);
 
     run(&mut collector);
 
@@ -527,19 +537,19 @@ fn finalise(run: impl Fn(&mut Collector)) -> CollectionResult {
     }
 }
 
-pub trait HowMuchWhere {
-    fn how_much_where_impl(&self, collector: &mut Collector);
+pub trait HowMuchWhere<Ctx: ?Sized> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>);
 
-    fn how_much_where(&self) -> CollectionResult {
-        finalise(|collector| self.how_much_where_impl(collector))
+    fn how_much_where(&self, ctx: &Ctx) -> CollectionResult {
+        finalise(ctx, |collector| self.how_much_where_impl(collector))
     }
 }
 
-pub trait StaticallyKnown: HowMuchWhere + Sized {
-    fn how_much_where_impl_static(collector: &mut Collector);
+pub trait StaticallyKnown<Ctx: ?Sized>: HowMuchWhere<Ctx> + Sized {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>);
 
-    fn how_much_where_static() -> CollectionResult {
-        finalise(Self::how_much_where_impl_static)
+    fn how_much_where_static(ctx: &Ctx) -> CollectionResult {
+        finalise(ctx, Self::how_much_where_impl_static)
     }
 }
 
@@ -599,8 +609,8 @@ impl<'a, T: ?Sized, M: FollowMode> From<&'a mut T> for Follow<'a, T, M> {
     }
 }
 
-impl<T: ?Sized + HowMuchWhere, M: FollowMode> HowMuchWhere for Follow<'_, T, M> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: ?Sized + HowMuchWhere<Ctx>, M: FollowMode> HowMuchWhere<Ctx> for Follow<'_, T, M> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -611,8 +621,8 @@ impl<T: ?Sized + HowMuchWhere, M: FollowMode> HowMuchWhere for Follow<'_, T, M> 
     }
 }
 
-impl<'a, T: ?Sized + StaticallyKnown + 'a> StaticallyKnown for Follow<'a, T, UniqueFollow> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<'a, Ctx: ?Sized, T: ?Sized + StaticallyKnown<Ctx> + 'a> StaticallyKnown<Ctx> for Follow<'a, T, UniqueFollow> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -623,10 +633,10 @@ impl<'a, T: ?Sized + StaticallyKnown + 'a> StaticallyKnown for Follow<'a, T, Uni
     }
 }
 
-fn collection_data_without_padding<'a, T: HowMuchWhere + ?Sized + 'a>(
+fn collection_data_without_padding<'a, Ctx: ?Sized, T: HowMuchWhere<Ctx> + ?Sized + 'a>(
     loc: Location,
     t: impl IntoIterator<Item = &'a T>,
-    collector: &mut StructCollector<'_, '_>,
+    collector: &mut StructCollector<Ctx>,
 ) {
     for i in t {
         collector.field(loc, "data", i);
@@ -638,9 +648,9 @@ fn cumulative_padding<T>(len: usize) -> usize {
     (layout.pad_to_align().size() - layout.size()) * len
 }
 
-fn slicelike_collection<'a, T: HowMuchWhere + Sized + 'a, C: ?Sized>(
+fn slicelike_collection<'a, Ctx: ?Sized, T: HowMuchWhere<Ctx> + Sized + 'a, C: ?Sized>(
     value: &'a C,
-    collector: &mut Collector<'_>,
+    collector: &mut Collector<Ctx>,
 ) where
     &'a C: IntoIterator<Item = &'a T>,
 {
@@ -648,11 +658,11 @@ fn slicelike_collection<'a, T: HowMuchWhere + Sized + 'a, C: ?Sized>(
     collection_data_without_padding(Inline, value, &mut collector);
 }
 
-fn veclike_collection<'a, T: HowMuchWhere + 'a, C: ?Sized>(
+fn veclike_collection<'a, Ctx: ?Sized, T: HowMuchWhere<Ctx> + 'a, C: ?Sized>(
     value: &'a C,
     len: usize,
     capacity: usize,
-    collector: &mut Collector<'_>,
+    collector: &mut Collector<Ctx>,
 ) where
     &'a C: IntoIterator<Item = &'a T>,
 {
@@ -670,9 +680,9 @@ fn veclike_collection<'a, T: HowMuchWhere + 'a, C: ?Sized>(
     collection_data_without_padding(Allocated, value, &mut collector);
 }
 
-fn collect_smart_ptr<C: ops::Deref<Target = T>, T: HowMuchWhere + ?Sized>(
+fn collect_smart_ptr<Ctx: ?Sized, C: ops::Deref<Target = T>, T: HowMuchWhere<Ctx> + ?Sized>(
     value: &C,
-    collector: &mut Collector<'_>,
+    collector: &mut Collector<Ctx>,
 ) {
     collector
         .collect_in_manual_struct::<C>()
@@ -683,9 +693,9 @@ fn collect_smart_ptr<C: ops::Deref<Target = T>, T: HowMuchWhere + ?Sized>(
         .field(Allocated, "referenced", &**value);
 }
 
-fn collect_smart_ptr_static<C: ops::Deref>(collector: &mut Collector<'_>)
+fn collect_smart_ptr_static<Ctx: ?Sized, C: ops::Deref>(collector: &mut Collector<Ctx>)
 where
-    C::Target: StaticallyKnown,
+    C::Target: StaticallyKnown<Ctx>,
 {
     collector
         .collect_in_manual_struct::<C>()
@@ -696,14 +706,14 @@ where
         .field_statically_known::<C::Target>(Allocated, "referenced");
 }
 
-impl<T: HowMuchWhere, const N: usize> HowMuchWhere for [T; N] {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>, const N: usize> HowMuchWhere<Ctx> for [T; N] {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         slicelike_collection(self, collector);
     }
 }
 
-impl<T: StaticallyKnown, const N: usize> StaticallyKnown for [T; N] {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>, const N: usize> StaticallyKnown<Ctx> for [T; N] {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_struct::<Self>();
         for _ in 0..N {
             collector.field_statically_known::<T>(Inline, "data");
@@ -711,14 +721,14 @@ impl<T: StaticallyKnown, const N: usize> StaticallyKnown for [T; N] {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for [T] {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for [T] {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         slicelike_collection(self, collector);
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::collections::BinaryHeap<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::collections::BinaryHeap<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         veclike_collection(self, self.len(), self.capacity(), collector);
     }
 }
@@ -729,8 +739,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::BinaryHeap<T> {
 /// NOTE: This clones itself to access the member inside, which will however only provide a lower
 /// bound for the actual memory consumption (or a completely incorrect one depending on the kinds
 /// of types inside)
-impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::binary_heap::IntoIter<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Clone> HowMuchWhere<Ctx> for std::collections::binary_heap::IntoIter<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
         collector.category("overhead", |c| {
             c.field_size_of_val(Inline, "inline_overhead", self)
@@ -752,7 +762,7 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::binary_heap::In
     }
 }
 
-fn apply_btree_info<K, V>(len: usize, collector: &mut StructCollector<'_, '_>) {
+fn apply_btree_info<Ctx: ?Sized, K, V>(len: usize, collector: &mut StructCollector<Ctx>) {
     // In the last checked implementation, B had a value of 6 and the layout was:
     //
     // for leaf nodes:
@@ -835,15 +845,15 @@ fn apply_btree_info<K, V>(len: usize, collector: &mut StructCollector<'_, '_>) {
 /// of nodes for that matter. This implementation assumes a fully packed tree.
 ///
 /// For the node overhead it's just using the layout from the nightly std from 2022-06-19
-impl<K: HowMuchWhere, V: HowMuchWhere> HowMuchWhere for std::collections::BTreeMap<K, V> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, K: HowMuchWhere<Ctx>, V: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::collections::BTreeMap<K, V> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
         collector.category("overhead", |c| {
             c.field_size_of_val(Inline, "inline_overhead", self)
                 .end_ref()
         });
 
-        apply_btree_info::<K, V>(self.len(), &mut collector);
+        apply_btree_info::<_, K, V>(self.len(), &mut collector);
 
         for (key, value) in self {
             collector.field(Allocated, "keys", key);
@@ -857,15 +867,15 @@ impl<K: HowMuchWhere, V: HowMuchWhere> HowMuchWhere for std::collections::BTreeM
 /// of nodes for that matter. This implementation assumes a fully packed tree.
 ///
 /// For the node overhead it's just using the layout from the nightly std from 2022-06-19
-impl<T: HowMuchWhere> HowMuchWhere for std::collections::BTreeSet<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::collections::BTreeSet<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
         collector.category("overhead", |c| {
             c.field_size_of_val(Inline, "inline_overhead", self)
                 .end_ref()
         });
 
-        apply_btree_info::<T, ()>(self.len(), &mut collector);
+        apply_btree_info::<_, T, ()>(self.len(), &mut collector);
 
         for i in self {
             collector.field(Allocated, "data", i);
@@ -873,7 +883,7 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::BTreeSet<T> {
     }
 }
 
-fn apply_hashmap_info<K, V>(len: usize, capacity: usize, collector: &mut StructCollector<'_, '_>) {
+fn apply_hashmap_info<Ctx: ?Sized, K, V>(len: usize, capacity: usize, collector: &mut StructCollector<Ctx>) {
     let kv_layout = Layout::new::<(K, V)>().pad_to_align();
 
     let buckets = match capacity {
@@ -913,8 +923,8 @@ fn apply_hashmap_info<K, V>(len: usize, capacity: usize, collector: &mut StructC
 /// NOTE: This is based on hashbrown v0.12.1, so this might be inaccurate for other versions, and
 /// also assumes SSE2 to be available. If it isn't, this will be report a *slightly* bigger
 /// allocated overhead
-impl<K: HowMuchWhere, V: HowMuchWhere, S> HowMuchWhere for std::collections::HashMap<K, V, S> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, K: HowMuchWhere<Ctx>, V: HowMuchWhere<Ctx>, S> HowMuchWhere<Ctx> for std::collections::HashMap<K, V, S> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
         collector.category("overhead", |c| {
@@ -922,7 +932,7 @@ impl<K: HowMuchWhere, V: HowMuchWhere, S> HowMuchWhere for std::collections::Has
                 .end_ref()
         });
 
-        apply_hashmap_info::<K, V>(self.len(), self.capacity(), &mut collector);
+        apply_hashmap_info::<_, K, V>(self.len(), self.capacity(), &mut collector);
 
         for (key, value) in self {
             collector.field(Allocated, "keys", key);
@@ -935,8 +945,8 @@ impl<K: HowMuchWhere, V: HowMuchWhere, S> HowMuchWhere for std::collections::Has
 /// NOTE: This is based on hashbrown v0.12.1, so this might be inaccurate for other versions, and
 /// also assumes SSE2 to be available. If it isn't, this will be report a *slightly* bigger
 /// allocated overhead
-impl<T: HowMuchWhere, S> HowMuchWhere for std::collections::HashSet<T, S> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>, S> HowMuchWhere<Ctx> for std::collections::HashSet<T, S> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
         collector.category("overhead", |c| {
@@ -944,7 +954,7 @@ impl<T: HowMuchWhere, S> HowMuchWhere for std::collections::HashSet<T, S> {
                 .end_ref()
         });
 
-        apply_hashmap_info::<T, ()>(self.len(), self.capacity(), &mut collector);
+        apply_hashmap_info::<_, T, ()>(self.len(), self.capacity(), &mut collector);
 
         for i in self {
             collector.field(Allocated, "data", i);
@@ -952,7 +962,7 @@ impl<T: HowMuchWhere, S> HowMuchWhere for std::collections::HashSet<T, S> {
     }
 }
 
-fn apply_linkedlist_info<'a, T>(len: usize, collector: &mut StructCollector) {
+fn apply_linkedlist_info<'a, Ctx: ?Sized, T>(len: usize, collector: &mut StructCollector<Ctx>) {
     struct Node<T> {
         _next: *const u8,
         _prev: *const u8,
@@ -971,8 +981,8 @@ fn apply_linkedlist_info<'a, T>(len: usize, collector: &mut StructCollector) {
 
 /// # This implementation has issues
 /// NOTE: This is based on the nightly std from 2022-06-19
-impl<T: HowMuchWhere> HowMuchWhere for std::collections::LinkedList<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::collections::LinkedList<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
         collector.category("overhead", |c| {
@@ -980,7 +990,7 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::LinkedList<T> {
                 .end_ref()
         });
 
-        apply_linkedlist_info::<T>(self.len(), &mut collector);
+        apply_linkedlist_info::<_, T>(self.len(), &mut collector);
 
         for i in self {
             collector.field(Allocated, "data", i);
@@ -993,8 +1003,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::LinkedList<T> {
 ///
 /// NOTE: This relies on cloning itself to access the internal data, which means referenced data
 /// that gets reallocated might have a different size
-impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::linked_list::IntoIter<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Clone> HowMuchWhere<Ctx> for std::collections::linked_list::IntoIter<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
 
         collector.category("overhead", |c| {
@@ -1008,12 +1018,12 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::linked_list::In
             len += 1;
         }
 
-        apply_linkedlist_info::<T>(len, &mut collector);
+        apply_linkedlist_info::<_, T>(len, &mut collector);
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::collections::VecDeque<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::collections::VecDeque<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         veclike_collection(self, self.len(), self.capacity(), collector)
     }
 }
@@ -1021,8 +1031,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::collections::VecDeque<T> {
 /// # This implementation has issues
 /// NOTE: This relies on cloning itself to access the internal data, which means referenced data
 /// that gets reallocated might have a different size, additionally the capacity is unknown
-impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::vec_deque::IntoIter<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Clone> HowMuchWhere<Ctx> for std::collections::vec_deque::IntoIter<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
         collector.category("overhead", |c| {
             c.field_size_of_val(Inline, "inline_overhead", self)
@@ -1044,48 +1054,48 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::collections::vec_deque::Into
     }
 }
 
-impl<T: ?Sized> HowMuchWhere for &'_ T {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: ?Sized> HowMuchWhere<Ctx> for &'_ T {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         Self::how_much_where_impl_static(collector)
     }
 }
 
-impl<'a, T: ?Sized + 'a> StaticallyKnown for &'a T {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<'a, Ctx: ?Sized, T: ?Sized + 'a> StaticallyKnown<Ctx> for &'a T {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .field_const_size("value", mem::size_of::<Self>(), 0);
     }
 }
 
-impl<T: ?Sized> HowMuchWhere for &'_ mut T {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: ?Sized> HowMuchWhere<Ctx> for &'_ mut T {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         Self::how_much_where_impl_static(collector)
     }
 }
 
-impl<'a, T: ?Sized + 'a> StaticallyKnown for &'a mut T {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<'a, Ctx: ?Sized, T: ?Sized + 'a> StaticallyKnown<Ctx> for &'a mut T {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .field_const_size("value", mem::size_of::<Self>(), 0);
     }
 }
 
-impl<T: HowMuchWhere + ?Sized> HowMuchWhere for Box<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + ?Sized> HowMuchWhere<Ctx> for Box<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collect_smart_ptr(self, collector)
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for Box<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
-        collect_smart_ptr_static::<Self>(collector)
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for Box<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
+        collect_smart_ptr_static::<_, Self>(collector)
     }
 }
 
-impl<T: HowMuchWhere + ?Sized + ToOwned> HowMuchWhere for std::borrow::Cow<'_, T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + ?Sized + ToOwned> HowMuchWhere<Ctx> for std::borrow::Cow<'_, T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::borrow::Cow;
         match *self {
             Cow::Borrowed(_) => {
@@ -1109,8 +1119,8 @@ impl<T: HowMuchWhere + ?Sized + ToOwned> HowMuchWhere for std::borrow::Cow<'_, T
 // # This implementations has issues
 // NOTE: This gets the inner value by replacing it with a default value and then putting the inner
 // value back in
-impl<T: HowMuchWhere + Default> HowMuchWhere for std::cell::Cell<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Default> HowMuchWhere<Ctx> for std::cell::Cell<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let inner = self.take();
         collector
             .collect_in_manual_struct::<Self>()
@@ -1127,8 +1137,8 @@ impl<T: HowMuchWhere + Default> HowMuchWhere for std::cell::Cell<T> {
     }
 }
 
-impl<T: StaticallyKnown + Default> StaticallyKnown for std::cell::Cell<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx> + Default> StaticallyKnown<Ctx> for std::cell::Cell<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1146,8 +1156,8 @@ impl<T: StaticallyKnown + Default> StaticallyKnown for std::cell::Cell<T> {
 // # This implementations has issues
 // NOTE: This uses `borrow` to get the inner value with `try_borrow`, and will only report
 // incomplete data if that fails
-impl<T: HowMuchWhere> HowMuchWhere for std::cell::RefCell<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::cell::RefCell<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
         collector.category("overhead", |c| {
             c.field_const_size(
@@ -1166,8 +1176,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::cell::RefCell<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::cell::RefCell<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::cell::RefCell<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1185,8 +1195,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::cell::RefCell<T> {
 // # This implementations has issues
 // NOTE: We *know* there's a value inside, as such we can return something, but only if the value
 // memory usage is statically known
-impl<T: StaticallyKnown> HowMuchWhere for std::cell::UnsafeCell<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> HowMuchWhere<Ctx> for std::cell::UnsafeCell<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1201,8 +1211,8 @@ impl<T: StaticallyKnown> HowMuchWhere for std::cell::UnsafeCell<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::cell::UnsafeCell<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::cell::UnsafeCell<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1217,8 +1227,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::cell::UnsafeCell<T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::cmp::Reverse<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::cmp::Reverse<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1233,8 +1243,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::cmp::Reverse<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::cmp::Reverse<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::cmp::Reverse<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1251,7 +1261,7 @@ impl<T: StaticallyKnown> StaticallyKnown for std::cmp::Reverse<T> {
 
 // Most implementations use a `vec::IntoIter<OsString>` or are empty - the one exception is `sgx`,
 // which I'm not going to support correctly here
-fn collect_for_args<A: ExactSizeIterator>(args: &A, collector: &mut Collector) {
+fn collect_for_args<Ctx: ?Sized, A: ExactSizeIterator>(args: &A, collector: &mut Collector<Ctx>) {
     use std::ffi::OsString;
 
     let mut collector = collector.collect_in_manual_struct::<A>();
@@ -1278,20 +1288,20 @@ fn collect_for_args<A: ExactSizeIterator>(args: &A, collector: &mut Collector) {
     }
 }
 
-impl HowMuchWhere for std::env::Args {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::env::Args {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collect_for_args(self, collector);
     }
 }
 
-impl HowMuchWhere for std::env::ArgsOs {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::env::ArgsOs {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collect_for_args(self, collector);
     }
 }
 
-impl HowMuchWhere for std::env::VarError {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::env::VarError {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::env::VarError;
         match *self {
             VarError::NotPresent => {
@@ -1306,16 +1316,16 @@ impl HowMuchWhere for std::env::VarError {
     }
 }
 
-impl HowMuchWhere for std::ffi::OsStr {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::ffi::OsStr {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .field_size_of_val(Inline, "data", self);
     }
 }
 
-impl HowMuchWhere for std::ffi::OsString {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::ffi::OsString {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let actual_data_bytes = mem::size_of_val(self.as_os_str());
         collector
             .collect_in_manual_struct::<Self>()
@@ -1335,8 +1345,8 @@ impl HowMuchWhere for std::ffi::OsString {
     }
 }
 
-impl HowMuchWhere for std::ffi::CStr {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::ffi::CStr {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1346,8 +1356,8 @@ impl HowMuchWhere for std::ffi::CStr {
     }
 }
 
-impl HowMuchWhere for std::ffi::CString {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::ffi::CString {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1359,8 +1369,8 @@ impl HowMuchWhere for std::ffi::CString {
     }
 }
 
-impl HowMuchWhere for std::ffi::FromVecWithNulError {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::ffi::FromVecWithNulError {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1377,8 +1387,8 @@ impl HowMuchWhere for std::ffi::FromVecWithNulError {
     }
 }
 
-impl<R: HowMuchWhere> HowMuchWhere for std::io::BufReader<R> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, R: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::io::BufReader<R> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1399,8 +1409,8 @@ impl<R: HowMuchWhere> HowMuchWhere for std::io::BufReader<R> {
     }
 }
 
-impl<W: HowMuchWhere + std::io::Write> HowMuchWhere for std::io::BufWriter<W> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, W: HowMuchWhere<Ctx> + std::io::Write> HowMuchWhere<Ctx> for std::io::BufWriter<W> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1421,8 +1431,8 @@ impl<W: HowMuchWhere + std::io::Write> HowMuchWhere for std::io::BufWriter<W> {
     }
 }
 
-impl<T: HowMuchWhere, U: HowMuchWhere> HowMuchWhere for std::io::Chain<T, U> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>, U: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::io::Chain<T, U> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let (left, right) = self.get_ref();
         collector
             .collect_in_struct::<Self>()
@@ -1431,8 +1441,8 @@ impl<T: HowMuchWhere, U: HowMuchWhere> HowMuchWhere for std::io::Chain<T, U> {
     }
 }
 
-impl<T: StaticallyKnown, U: StaticallyKnown> StaticallyKnown for std::io::Chain<T, U> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>, U: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::io::Chain<T, U> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<T>(Inline, "left")
@@ -1440,8 +1450,8 @@ impl<T: StaticallyKnown, U: StaticallyKnown> StaticallyKnown for std::io::Chain<
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::io::Cursor<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::io::Cursor<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1456,8 +1466,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::io::Cursor<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::io::Cursor<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::io::Cursor<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1474,8 +1484,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::io::Cursor<T> {
 
 /// # This implementation has issues
 /// NOTE: This cannot look into dynamic errors besides the size of their main allocation.
-impl HowMuchWhere for std::io::Error {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::io::Error {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         match self.get_ref() {
             None => {
                 collector
@@ -1497,8 +1507,8 @@ impl HowMuchWhere for std::io::Error {
 
 /// # This implementation has issues
 /// NOTE: This requires `W` to be statically known because it cannot be accessed
-impl<W: StaticallyKnown> HowMuchWhere for std::io::IntoInnerError<W> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, W: StaticallyKnown<Ctx>> HowMuchWhere<Ctx> for std::io::IntoInnerError<W> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<W>(Inline, "writer")
@@ -1506,8 +1516,8 @@ impl<W: StaticallyKnown> HowMuchWhere for std::io::IntoInnerError<W> {
     }
 }
 
-impl<W: std::io::Write + HowMuchWhere> HowMuchWhere for std::io::LineWriter<W> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, W: std::io::Write + HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::io::LineWriter<W> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1522,8 +1532,8 @@ impl<W: std::io::Write + HowMuchWhere> HowMuchWhere for std::io::LineWriter<W> {
     }
 }
 
-impl<T: std::io::Write + StaticallyKnown> StaticallyKnown for std::io::LineWriter<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: std::io::Write + StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::io::LineWriter<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1538,8 +1548,8 @@ impl<T: std::io::Write + StaticallyKnown> StaticallyKnown for std::io::LineWrite
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::io::Take<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::io::Take<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1554,8 +1564,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::io::Take<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::io::Take<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::io::Take<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1572,14 +1582,14 @@ impl<T: StaticallyKnown> StaticallyKnown for std::io::Take<T> {
 
 /// # This implementation has issues
 /// NOTE: This requires `A` and `B` to be statically known because they cannot be accessed
-impl<A: StaticallyKnown, B: StaticallyKnown> HowMuchWhere for std::iter::Chain<A, B> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, A: StaticallyKnown<Ctx>, B: StaticallyKnown<Ctx>> HowMuchWhere<Ctx> for std::iter::Chain<A, B> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         Self::how_much_where_impl_static(collector);
     }
 }
 
-impl<A: StaticallyKnown, B: StaticallyKnown> StaticallyKnown for std::iter::Chain<A, B> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, A: StaticallyKnown<Ctx>, B: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::iter::Chain<A, B> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1599,8 +1609,8 @@ impl<A: StaticallyKnown, B: StaticallyKnown> StaticallyKnown for std::iter::Chai
 /// NOTE: This clones itself to access the data inside, which will however only provide a lower
 /// bound for the actual memory consumption (or a completely incorrect one depending on the kinds
 /// of types inside)
-impl<T: HowMuchWhere + Clone> HowMuchWhere for std::iter::Once<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Clone> HowMuchWhere<Ctx> for std::iter::Once<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         match self.clone().next() {
             None => {
                 collector.collect_in_variant::<Self>("Exhausted", None);
@@ -1618,16 +1628,16 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::iter::Once<T> {
 /// NOTE: This clones itself to access the data inside, which will however only provide a lower
 /// bound for the actual memory consumption (or a completely incorrect one depending on the kinds
 /// of types inside)
-impl<T: HowMuchWhere + Clone> HowMuchWhere for std::iter::Repeat<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Clone> HowMuchWhere<Ctx> for std::iter::Repeat<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field(Inline, "item", &self.clone().next().unwrap());
     }
 }
 
-impl<T: StaticallyKnown + Clone> StaticallyKnown for std::iter::Repeat<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx> + Clone> StaticallyKnown<Ctx> for std::iter::Repeat<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<T>(Inline, "item");
@@ -1636,14 +1646,14 @@ impl<T: StaticallyKnown + Clone> StaticallyKnown for std::iter::Repeat<T> {
 
 /// # This implementation has issues
 /// NOTE: This requires `A` and `B` to be statically known because they cannot be accessed
-impl<A: StaticallyKnown, B: StaticallyKnown> HowMuchWhere for std::iter::Zip<A, B> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, A: StaticallyKnown<Ctx>, B: StaticallyKnown<Ctx>> HowMuchWhere<Ctx> for std::iter::Zip<A, B> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         Self::how_much_where_impl_static(collector);
     }
 }
 
-impl<A: StaticallyKnown, B: StaticallyKnown> StaticallyKnown for std::iter::Zip<A, B> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, A: StaticallyKnown<Ctx>, B: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::iter::Zip<A, B> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1659,8 +1669,8 @@ impl<A: StaticallyKnown, B: StaticallyKnown> StaticallyKnown for std::iter::Zip<
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::num::Wrapping<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::num::Wrapping<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1675,8 +1685,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::num::Wrapping<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::num::Wrapping<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::num::Wrapping<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1691,8 +1701,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::num::Wrapping<T> {
     }
 }
 
-impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::Range<Idx> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::ops::Range<Idx> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field(Inline, "start", &self.start)
@@ -1700,8 +1710,8 @@ impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::Range<Idx> {
     }
 }
 
-impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::Range<Idx> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::ops::Range<Idx> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "start")
@@ -1709,24 +1719,24 @@ impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::Range<Idx> {
     }
 }
 
-impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeFrom<Idx> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::ops::RangeFrom<Idx> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field(Inline, "start", &self.start);
     }
 }
 
-impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeFrom<Idx> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::ops::RangeFrom<Idx> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "start");
     }
 }
 
-impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeInclusive<Idx> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::ops::RangeInclusive<Idx> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field(Inline, "start", self.start())
@@ -1734,8 +1744,8 @@ impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeInclusive<Idx> {
     }
 }
 
-impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeInclusive<Idx> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::ops::RangeInclusive<Idx> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "start")
@@ -1743,40 +1753,40 @@ impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeInclusive<Idx> {
     }
 }
 
-impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeTo<Idx> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::ops::RangeTo<Idx> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field(Inline, "end", &self.end);
     }
 }
 
-impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeTo<Idx> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::ops::RangeTo<Idx> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "end");
     }
 }
 
-impl<Idx: HowMuchWhere> HowMuchWhere for std::ops::RangeToInclusive<Idx> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::ops::RangeToInclusive<Idx> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field(Inline, "end", &self.end);
     }
 }
 
-impl<Idx: StaticallyKnown> StaticallyKnown for std::ops::RangeToInclusive<Idx> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, Idx: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::ops::RangeToInclusive<Idx> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<Idx>(Inline, "end");
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::ops::Bound<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::ops::Bound<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::ops::Bound;
 
         match *self {
@@ -1797,8 +1807,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::ops::Bound<T> {
     }
 }
 
-impl<B: HowMuchWhere, C: HowMuchWhere> HowMuchWhere for std::ops::ControlFlow<B, C> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, B: HowMuchWhere<Ctx>, C: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::ops::ControlFlow<B, C> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::ops::ControlFlow;
 
         match *self {
@@ -1820,8 +1830,8 @@ impl<B: HowMuchWhere, C: HowMuchWhere> HowMuchWhere for std::ops::ControlFlow<B,
 /// NOTE: This clones itself to access the data inside, which will however only provide a lower
 /// bound for the actual memory consumption (or a completely incorrect one depending on the kinds
 /// of types inside)
-impl<T: HowMuchWhere + Clone> HowMuchWhere for std::option::IntoIter<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Clone> HowMuchWhere<Ctx> for std::option::IntoIter<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         match self.clone().next() {
             None => {
                 collector.collect_in_variant::<Self>("ExhaustedOrNone", None);
@@ -1835,8 +1845,8 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::option::IntoIter<T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for Option<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for Option<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         match *self {
             None => {
                 collector.collect_in_variant::<Self>("None", None);
@@ -1850,8 +1860,8 @@ impl<T: HowMuchWhere> HowMuchWhere for Option<T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::panic::AssertUnwindSafe<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::panic::AssertUnwindSafe<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1866,8 +1876,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::panic::AssertUnwindSafe<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::panic::AssertUnwindSafe<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::panic::AssertUnwindSafe<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1882,16 +1892,16 @@ impl<T: StaticallyKnown> StaticallyKnown for std::panic::AssertUnwindSafe<T> {
     }
 }
 
-impl HowMuchWhere for std::path::Path {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::path::Path {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_unsized_struct(self)
             .field_size_of_val(Inline, "data", self);
     }
 }
 
-impl HowMuchWhere for std::path::PathBuf {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::path::PathBuf {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let actual_data_bytes = mem::size_of_val(self.as_os_str());
         let len = self.as_os_str().len();
         collector
@@ -1916,8 +1926,8 @@ impl HowMuchWhere for std::path::PathBuf {
 /// NOTE: This cannot get a "normal" reference into the inner data, but *can* get a reference to
 /// whatever is being pointed to, so it just assumes the inner pointer doesn't have an allocated
 /// overhead and counts the inline overhead as its own.
-impl<T: std::ops::Deref<Target = D>, D: HowMuchWhere> HowMuchWhere for std::pin::Pin<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: std::ops::Deref<Target = D>, D: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::pin::Pin<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -1928,8 +1938,8 @@ impl<T: std::ops::Deref<Target = D>, D: HowMuchWhere> HowMuchWhere for std::pin:
     }
 }
 
-impl HowMuchWhere for std::process::Command {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::process::Command {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::collections::BTreeMap;
         use std::ffi::OsString;
 
@@ -1984,13 +1994,13 @@ impl HowMuchWhere for std::process::Command {
                 size += 1;
             }
 
-            apply_btree_info::<OsString, Option<OsString>>(size, &mut c);
+            apply_btree_info::<_, OsString, Option<OsString>>(size, &mut c);
         });
     }
 }
 
-impl HowMuchWhere for std::process::Output {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::process::Output {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field(Inline, "status", &self.status)
@@ -2001,8 +2011,8 @@ impl HowMuchWhere for std::process::Output {
 
 struct RcBox<'a, T>(&'a T);
 
-impl<'a, T: HowMuchWhere> HowMuchWhere for RcBox<'a, T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<'a, Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for RcBox<'a, T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         struct RcBoxLayout<T> {
             _strong: usize,
             _weak: usize,
@@ -2023,8 +2033,8 @@ impl<'a, T: HowMuchWhere> HowMuchWhere for RcBox<'a, T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::rc::Rc<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::rc::Rc<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2038,8 +2048,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::rc::Rc<T> {
 /// # This implementation has issues
 /// NOTE: This relies on cloning itself to access the internal data, which means referenced data
 /// that gets reallocated might have a different size, additionally the capacity is unknown
-impl<T: HowMuchWhere + Clone> HowMuchWhere for std::result::IntoIter<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx> + Clone> HowMuchWhere<Ctx> for std::result::IntoIter<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         match self.clone().next() {
             None => {
                 collector.collect_in_variant::<Self>("ExhaustedOrErr", None);
@@ -2053,8 +2063,8 @@ impl<T: HowMuchWhere + Clone> HowMuchWhere for std::result::IntoIter<T> {
     }
 }
 
-impl<T: HowMuchWhere, E: HowMuchWhere> HowMuchWhere for Result<T, E> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>, E: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for Result<T, E> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         match *self {
             Ok(ref val) => {
                 collector
@@ -2072,8 +2082,8 @@ impl<T: HowMuchWhere, E: HowMuchWhere> HowMuchWhere for Result<T, E> {
 
 /// # This implementation has issues
 /// NOTE: Sadly it's impossible to retrieve the capacity
-impl HowMuchWhere for std::string::FromUtf8Error {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::string::FromUtf8Error {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .category("overhead", |c| {
@@ -2085,16 +2095,16 @@ impl HowMuchWhere for std::string::FromUtf8Error {
     }
 }
 
-impl HowMuchWhere for str {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for str {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_unsized_struct(self)
             .field_size_of_val(Inline, "data", self);
     }
 }
 
-impl HowMuchWhere for String {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for String {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2106,8 +2116,8 @@ impl HowMuchWhere for String {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::sync::mpsc::SendError<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::sync::mpsc::SendError<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2122,8 +2132,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::mpsc::SendError<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::sync::mpsc::SendError<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::sync::mpsc::SendError<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2138,8 +2148,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::sync::mpsc::SendError<T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::sync::mpsc::TrySendError<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::sync::mpsc::TrySendError<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::sync::mpsc::TrySendError;
 
         match *self {
@@ -2155,8 +2165,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::mpsc::TrySendError<T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::sync::Arc<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::sync::Arc<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2167,8 +2177,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::Arc<T> {
     }
 }
 
-impl HowMuchWhere for std::sync::Barrier {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::sync::Barrier {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .field_size_of_val(Inline, "inline_data", self)
@@ -2176,8 +2186,8 @@ impl HowMuchWhere for std::sync::Barrier {
     }
 }
 
-impl StaticallyKnown for std::sync::Barrier {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized> StaticallyKnown<Ctx> for std::sync::Barrier {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .field_const_size("inline_data", mem::size_of::<Self>(), 0)
@@ -2185,8 +2195,8 @@ impl StaticallyKnown for std::sync::Barrier {
     }
 }
 
-impl HowMuchWhere for std::sync::Condvar {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::sync::Condvar {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .field_size_of_val(Inline, "inline_data", self)
@@ -2194,8 +2204,8 @@ impl HowMuchWhere for std::sync::Condvar {
     }
 }
 
-impl StaticallyKnown for std::sync::Condvar {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized> StaticallyKnown<Ctx> for std::sync::Condvar {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .field_const_size("inline_data", mem::size_of::<Self>(), 0)
@@ -2206,8 +2216,8 @@ impl StaticallyKnown for std::sync::Condvar {
 // # This implementation has issues
 // NOTE: This tries to lock itself to figure out what's inside, if it can't without blocking it
 // will not count the data inside correctly.
-impl<T: HowMuchWhere> HowMuchWhere for std::sync::Mutex<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::sync::Mutex<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::sync::TryLockError;
 
         let mut collector = collector.collect_in_manual_struct::<Self>();
@@ -2233,8 +2243,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::Mutex<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::sync::Mutex<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::sync::Mutex<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2250,8 +2260,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::sync::Mutex<T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::sync::PoisonError<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::sync::PoisonError<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2266,8 +2276,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::PoisonError<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::sync::PoisonError<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::sync::PoisonError<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2285,8 +2295,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::sync::PoisonError<T> {
 // # This implementation has issues
 // NOTE: This tries to lock itself to figure out what's inside, if it can't without blocking it
 // will not count the data inside correctly.
-impl<T: HowMuchWhere> HowMuchWhere for std::sync::RwLock<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::sync::RwLock<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::sync::TryLockError;
 
         let mut collector = collector.collect_in_manual_struct::<Self>();
@@ -2312,8 +2322,8 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::RwLock<T> {
     }
 }
 
-impl<T: StaticallyKnown> StaticallyKnown for std::sync::RwLock<T> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized, T: StaticallyKnown<Ctx>> StaticallyKnown<Ctx> for std::sync::RwLock<T> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2329,8 +2339,8 @@ impl<T: StaticallyKnown> StaticallyKnown for std::sync::RwLock<T> {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::sync::TryLockError<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::sync::TryLockError<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::sync::TryLockError;
 
         match *self {
@@ -2345,14 +2355,14 @@ impl<T: HowMuchWhere> HowMuchWhere for std::sync::TryLockError<T> {
     }
 }
 
-impl HowMuchWhere for std::task::RawWaker {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::task::RawWaker {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         Self::how_much_where_impl_static(collector)
     }
 }
 
-impl StaticallyKnown for std::task::RawWaker {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized> StaticallyKnown<Ctx> for std::task::RawWaker {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2363,14 +2373,14 @@ impl StaticallyKnown for std::task::RawWaker {
     }
 }
 
-impl HowMuchWhere for std::task::Waker {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized> HowMuchWhere<Ctx> for std::task::Waker {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         Self::how_much_where_impl_static(collector)
     }
 }
 
-impl StaticallyKnown for std::task::Waker {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<Ctx: ?Sized> StaticallyKnown<Ctx> for std::task::Waker {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_manual_struct::<Self>()
             .category("overhead", |c| {
@@ -2381,8 +2391,8 @@ impl StaticallyKnown for std::task::Waker {
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for std::task::Poll<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::task::Poll<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         use std::task::Poll;
 
         match *self {
@@ -2399,16 +2409,16 @@ impl<T: HowMuchWhere> HowMuchWhere for std::task::Poll<T> {
 }
 
 macro_rules! static_size_alloc_unknown {
-    {$({$($implpre:tt)*} {$($implpost:tt)*})*} => {
+    {$({impl $(<$($generic:tt),+>)?} {$($implpost:tt)*})*} => {
         $(
-            $($implpre)* HowMuchWhere $($implpost)* {
-                fn how_much_where_impl(&self, collector: &mut Collector) {
+            impl<$($($generic,)+)? Ctx: ?Sized> HowMuchWhere<Ctx> $($implpost)* {
+                fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
                     Self::how_much_where_impl_static(collector);
                 }
             }
 
-            $($implpre)* StaticallyKnown $($implpost)* {
-                fn how_much_where_impl_static(collector: &mut Collector) {
+            impl<$($($generic,)+)? Ctx: ?Sized> StaticallyKnown<Ctx> $($implpost)* {
+                fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
                     collector.collect_in_manual_struct::<Self>()
                         .field_const_size("inline_data", mem::size_of::<Self>(), 0)
                         .field_const_size("alloc_data_unknown", 0, 1);
@@ -2427,8 +2437,8 @@ static_size_alloc_unknown! {
 
 /// # This implementation has issues
 /// NOTE: Sadly it's impossible to retrieve the capacity of `IntoIter`
-impl<T: HowMuchWhere> HowMuchWhere for std::vec::IntoIter<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for std::vec::IntoIter<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         let mut collector = collector.collect_in_manual_struct::<Self>();
         collector.category("overhead", |c| {
             c.field_size_of_val(Inline, "inline_overhead", self)
@@ -2452,14 +2462,14 @@ impl<T: HowMuchWhere> HowMuchWhere for std::vec::IntoIter<T> {
 
 /// # This implementation has issues
 /// NOTE: This requires `I` to be statically known because it cannot be accessed
-impl<'a, I: Iterator + StaticallyKnown + 'a> HowMuchWhere for std::vec::Splice<'a, I> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<'a, Ctx: ?Sized, I: Iterator + StaticallyKnown<Ctx> + 'a> HowMuchWhere<Ctx> for std::vec::Splice<'a, I> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         Self::how_much_where_impl_static(collector);
     }
 }
 
-impl<'a, I: Iterator + StaticallyKnown + 'a> StaticallyKnown for std::vec::Splice<'a, I> {
-    fn how_much_where_impl_static(collector: &mut Collector) {
+impl<'a, Ctx: ?Sized, I: Iterator + StaticallyKnown<Ctx> + 'a> StaticallyKnown<Ctx> for std::vec::Splice<'a, I> {
+    fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
         collector
             .collect_in_struct::<Self>()
             .field_statically_known::<std::vec::Drain<'a, I::Item>>(Inline, "drain")
@@ -2467,8 +2477,8 @@ impl<'a, I: Iterator + StaticallyKnown + 'a> StaticallyKnown for std::vec::Splic
     }
 }
 
-impl<T: HowMuchWhere> HowMuchWhere for Vec<T> {
-    fn how_much_where_impl(&self, collector: &mut Collector) {
+impl<Ctx: ?Sized, T: HowMuchWhere<Ctx>> HowMuchWhere<Ctx> for Vec<T> {
+    fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
         veclike_collection(self, self.len(), self.capacity(), collector);
     }
 }
@@ -2479,14 +2489,14 @@ macro_rules! impl_for_fn {
     };
     {@cont} => {};
     {$($args:ident)*} => {
-        impl<$($args: ?Sized,)* R: ?Sized> HowMuchWhere for fn($($args),*) -> R {
-            fn how_much_where_impl(&self, collector: &mut Collector) {
+        impl<Ctx: ?Sized, $($args: ?Sized,)* R: ?Sized> HowMuchWhere<Ctx> for fn($($args),*) -> R {
+            fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
                 Self::how_much_where_impl_static(collector)
             }
         }
 
-        impl<$($args: ?Sized,)* R: ?Sized> StaticallyKnown for fn($($args),*) -> R {
-            fn how_much_where_impl_static(collector: &mut Collector) {
+        impl<Ctx: ?Sized, $($args: ?Sized,)* R: ?Sized> StaticallyKnown<Ctx> for fn($($args),*) -> R {
+            fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
                 collector.collect_in_manual_struct::<Self>()
                     .field_const_size("value", mem::size_of::<Self>(), 0);
             }
@@ -2514,8 +2524,8 @@ macro_rules! impl_for_tuple {
         ($($out)*)
     };
     {$($args:ident $names:literal $accesses:tt)*} => {
-        impl<$($args: HowMuchWhere),*> HowMuchWhere for impl_for_tuple!(@makety () $($args)*) {
-            fn how_much_where_impl(&self, collector: &mut Collector) {
+        impl<Ctx: ?Sized $(, $args: HowMuchWhere<Ctx>)*> HowMuchWhere<Ctx> for impl_for_tuple!(@makety () $($args)*) {
+            fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
                 collector.collect_in_struct::<Self>()
                     $(
                         .field(Inline, $names, &self.$accesses)
@@ -2523,8 +2533,8 @@ macro_rules! impl_for_tuple {
             }
         }
 
-        impl<$($args: StaticallyKnown),*> StaticallyKnown for impl_for_tuple!(@makety () $($args)*) {
-            fn how_much_where_impl_static(collector: &mut Collector) {
+        impl<Ctx: ?Sized $(, $args: StaticallyKnown<Ctx>)*> StaticallyKnown<Ctx> for impl_for_tuple!(@makety () $($args)*) {
+            fn how_much_where_impl_static(collector: &mut Collector<Ctx>) {
                 collector.collect_in_struct::<Self>()
                     // NOTE: This is ordered in reverse, just as the inputs, but thanks to the type
                     // having been put in reverse above, the first type in here will be both the
@@ -2641,12 +2651,15 @@ macro_rules! how_much_where_by_size_of {
             >)?
             $(where $($where:tt)*)?
     } => {
-        impl $(<
-            $($glt $(: $glt2f $(+ $glt2)*)?,)*
-            $($gty $(: $($gtybounds)*)?,)*
-            $(const $gconst: $gconstty,)*
-        >)?
-        $crate::HowMuchWhere
+        impl <
+            $($($glt $(: $glt2f $(+ $glt2)*)?,)*)?
+            Ctx: ?Sized
+            $(
+                $(, $gty $(: $($gtybounds)*)?)*
+                $(, const $gconst: $gconstty)*
+            )?
+        >
+        $crate::HowMuchWhere<Ctx>
         for $moduleorty $(:: $moduleortyext)* $(<
             $($glt,)*
             $($gty,)*
@@ -2654,17 +2667,20 @@ macro_rules! how_much_where_by_size_of {
         >)?
         $(where $($where)*)?
         {
-            fn how_much_where_impl(&self, collector: &mut $crate::Collector) {
+            fn how_much_where_impl(&self, collector: &mut $crate::Collector<Ctx>) {
                 Self::how_much_where_impl_static(collector);
             }
         }
 
-        impl $(<
-            $($glt $(: $glt2f $(+ $glt2)*)?,)*
-            $($gty $(: $($gtybounds)*)?,)*
-            $(const $gconst: $gconstty,)*
-        >)?
-        $crate::StaticallyKnown
+        impl <
+            $($($glt $(: $glt2f $(+ $glt2)*)?,)*)?
+            Ctx: ?Sized
+            $(
+                $(, $gty $(: $($gtybounds)*)?)*
+                $(, const $gconst: $gconstty)*
+            )?
+        >
+        $crate::StaticallyKnown<Ctx>
         for $moduleorty $(:: $moduleortyext)* $(<
             $($glt,)*
             $($gty,)*
@@ -2672,7 +2688,7 @@ macro_rules! how_much_where_by_size_of {
         >)?
         $(where $($where)*)?
         {
-            fn how_much_where_impl_static(collector: &mut $crate::Collector) {
+            fn how_much_where_impl_static(collector: &mut $crate::Collector<Ctx>) {
                 collector.collect_in_manual_struct::<Self>()
                     .field_const_size("value", mem::size_of::<Self>(), 0);
             }
@@ -2892,10 +2908,11 @@ macro_rules! opaque_wrapper {
     } => {
         impl<
             $($glt $(: $glt2f $(+ $glt2)*)?,)*
-            $gty : StaticallyKnown $(+ $($gtybounds)*)?
+            Ctx: ?Sized,
+            $gty : StaticallyKnown<Ctx> $(+ $($gtybounds)*)?
             $(, const $gconst: $gconstty,)*
         >
-        $crate::HowMuchWhere
+        $crate::HowMuchWhere<Ctx>
         for $moduleorty $(:: $moduleortyext)*<
             $($glt,)*
             $gty
@@ -2903,17 +2920,18 @@ macro_rules! opaque_wrapper {
         >
         $(where $($where)*)?
         {
-            fn how_much_where_impl(&self, collector: &mut $crate::Collector) {
+            fn how_much_where_impl(&self, collector: &mut $crate::Collector<Ctx>) {
                 Self::how_much_where_impl_static(collector);
             }
         }
 
         impl<
             $($glt $(: $glt2f $(+ $glt2)*)?,)*
-            $gty : StaticallyKnown $(+ $($gtybounds)*)?
+            Ctx: ?Sized,
+            $gty : StaticallyKnown<Ctx> $(+ $($gtybounds)*)?
             $(, const $gconst: $gconstty,)*
         >
-        $crate::StaticallyKnown
+        $crate::StaticallyKnown<Ctx>
         for $moduleorty $(:: $moduleortyext)*<
             $($glt,)*
             $gty
@@ -2921,7 +2939,7 @@ macro_rules! opaque_wrapper {
         >
         $(where $($where)*)?
         {
-            fn how_much_where_impl_static(collector: &mut $crate::Collector) {
+            fn how_much_where_impl_static(collector: &mut $crate::Collector<Ctx>) {
                 collector.collect_in_manual_struct::<Self>()
                     .category(
                         "overhead",

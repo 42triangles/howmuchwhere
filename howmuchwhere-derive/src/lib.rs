@@ -2,7 +2,7 @@ use darling::{util::Flag, Error, FromDeriveInput, FromField, FromVariant};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Field, Fields};
+use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Field, Fields};
 
 // TODO: Maybe collect errors?
 
@@ -25,6 +25,10 @@ struct TopLevelOpts {
     opaque_all_inline: Flag,
     override_repr: Option<Ident>,
     ignore_repr: Flag,
+    ctx: Option<syn::Ident>,
+    specific_ctx: Option<syn::Type>,
+    #[darling(rename = "where")]
+    where_: Option<Vec<syn::WherePredicate>>,
 }
 
 #[derive(FromVariant, Default)]
@@ -228,7 +232,7 @@ fn derive_fields(
 fn derive_inner(
     item: TokenStream,
     derived: TokenStream2,
-    method: &dyn Fn(TokenStream2, TokenStream2) -> TokenStream2,
+    method: &dyn Fn(TokenStream2, TokenStream2, TokenStream2) -> TokenStream2,
     allow_nonstatic: bool,
 ) -> TokenStream {
     let item: DeriveInput = parse_macro_input!(item);
@@ -420,10 +424,44 @@ fn derive_inner(
         }
     };
 
-    let method = method(collector, crate_.clone());
-    let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
+    let mut generics = item.generics.clone();
+
+    let ctx = match opts.specific_ctx {
+        None => {
+            let ctx = opts.ctx.clone()
+                .unwrap_or_else(|| Ident::new("_HowMuchWhere_Ctx", proc_macro2::Span::call_site()));
+
+            let pos = generics.params.iter()
+                .position(|i| match i { syn::GenericParam::Const(_) => true, _ => false })
+                .unwrap_or(generics.params.len());
+            generics.params.insert(
+                pos,
+                syn::GenericParam::Type(
+                    syn::TypeParam {
+                        attrs: Vec::new(),
+                        ident: ctx.clone(),
+                        colon_token: None, bounds: Punctuated::new(), eq_token: None, default: None,
+                    }
+                )
+            );
+
+            quote!{ #ctx }
+        },
+        Some(ctx) => quote!{ #ctx },
+    };
+
+    let method = method(collector, ctx.clone(), crate_.clone());
+
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
+    let ty_generics = item.generics.split_for_impl().1;
+
+    let where_clause = match opts.where_ {
+        None => quote!{ #where_clause },
+        Some(ref clause) => quote!{ where #(#clause),* },
+    };
+
     let output = quote! {
-        impl #impl_generics #crate_::#derived for #ident #ty_generics #where_clause {
+        impl #impl_generics #crate_::#derived<#ctx> for #ident #ty_generics #where_clause {
             #method {
                 #output
             }
@@ -438,9 +476,9 @@ pub fn derive_how_much_where(item: TokenStream) -> TokenStream {
     derive_inner(
         item,
         quote! { HowMuchWhere },
-        &|collector, crate_| {
+        &|collector, ctx, crate_| {
             quote! {
-                fn how_much_where_impl(&self, #collector: &mut #crate_::Collector)
+                fn how_much_where_impl(&self, #collector: &mut #crate_::Collector<#ctx>)
             }
         },
         true,
@@ -452,9 +490,9 @@ pub fn derive_statically_known(item: TokenStream) -> TokenStream {
     derive_inner(
         item,
         quote! { StaticallyKnown },
-        &|collector, crate_| {
+        &|collector, ctx, crate_| {
             quote! {
-                fn how_much_where_impl_static(#collector: &mut #crate_::Collector)
+                fn how_much_where_impl_static(#collector: &mut #crate_::Collector<#ctx>)
             }
         },
         false,

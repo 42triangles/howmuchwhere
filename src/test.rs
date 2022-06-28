@@ -37,7 +37,7 @@ const PTR_SIZE: usize = mem::size_of::<usize>();
 #[test]
 fn test_primitive() {
     assert_eq!(
-        (3u16).how_much_where(),
+        (3u16).how_much_where(&()),
         CollectionResult {
             root: hash_map! { path![:u16.value] => 2 },
             shared: HashMap::new(),
@@ -51,7 +51,7 @@ fn test_vec_of_primitive() {
     vec.push(0u16);
     vec.push(42u16);
     assert_eq!(
-        vec.how_much_where(),
+        vec.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:(Vec<u16>)+overhead.inline_overhead] => mem::size_of::<Vec<u16>>(),
@@ -75,7 +75,7 @@ fn test_derive_fieldless_enum() {
     }
 
     assert_eq!(
-        Test::A.how_much_where(),
+        Test::A.how_much_where(&()),
         CollectionResult {
             root: hash_map! { path![:Test.data] => 1 },
             shared: HashMap::new(),
@@ -95,7 +95,7 @@ fn test_derive_enum_c() {
     }
 
     assert_eq!(
-        Test::A.how_much_where(),
+        Test::A.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test/A+overhead.internal_padding_and_unused] => mem::size_of::<Test>() - mem::size_of::<c_int>(),
@@ -106,7 +106,7 @@ fn test_derive_enum_c() {
     );
 
     assert_eq!(
-        Test::B(0).how_much_where(),
+        Test::B(0).how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test/B+overhead.internal_padding_and_unused] => mem::size_of::<Test>() - mem::size_of::<c_int>() - 1,
@@ -130,7 +130,7 @@ fn test_derive_enum_u8() {
     }
 
     assert_eq!(
-        Test::A.how_much_where(),
+        Test::A.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test/A+overhead.internal_padding_and_unused] => 1,
@@ -141,7 +141,7 @@ fn test_derive_enum_u8() {
     );
 
     assert_eq!(
-        Test::B(0).how_much_where(),
+        Test::B(0).how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test/B+overhead.tag_size] => 1,
@@ -165,10 +165,10 @@ fn test_struct() {
 
     let test = Test { x: 1, y: 2 };
 
-    test.how_much_where();
+    test.how_much_where(&());
 
     assert_eq!(
-        test.how_much_where(),
+        test.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test.x :u8.value] => 1,
@@ -185,7 +185,7 @@ fn test_shared_reanchor_root() {
     use std::rc::Rc;
 
     assert_eq!(
-        Rc::new(0usize).how_much_where(),
+        Rc::new(0usize).how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:(Rc<usize>)+overhead.inline_overhead] => PTR_SIZE,
@@ -204,8 +204,8 @@ fn test_shared_cycle() {
 
     type Main = Rc<RefCell<Option<Rc<UncycleTypes>>>>;
     struct UncycleTypes(Main);
-    impl HowMuchWhere for UncycleTypes {
-        fn how_much_where_impl(&self, collector: &mut Collector) {
+    impl<Ctx: ?Sized> HowMuchWhere<Ctx> for UncycleTypes {
+        fn how_much_where_impl(&self, collector: &mut Collector<Ctx>) {
             self.0.how_much_where_impl(collector);
         }
     }
@@ -216,15 +216,15 @@ fn test_shared_cycle() {
     mem::drop(other);
 
     assert_eq!(
-        main.how_much_where().root,
+        main.how_much_where(&()).root,
         hash_map! { path![:Main+overhead.inline_overhead] => PTR_SIZE }
     );
 
     // The cycle gets inlined from `other` into `main`
-    assert_eq!(main.how_much_where().shared.len(), 1);
+    assert_eq!(main.how_much_where(&()).shared.len(), 1);
 
     assert_eq!(
-        main.how_much_where().total_size(),
+        main.how_much_where(&()).total_size(),
         PTR_SIZE +  // main Rc inline overhead (alloc overhead is shared!)
             PTR_SIZE * 3 * 2 +  // allocated Rc overhead
             PTR_SIZE +  // refcell overhead
@@ -242,7 +242,7 @@ fn test_with() {
     }
 
     assert_eq!(
-        Test1 { x: &3 }.how_much_where(),
+        Test1 { x: &3 }.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test1.x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
@@ -260,7 +260,7 @@ fn test_with() {
     }
 
     assert_eq!(
-        Test2 { x: &3 }.how_much_where(),
+        Test2 { x: &3 }.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test2.x :(Follow<u8, SharedFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
@@ -281,7 +281,7 @@ fn test_with_extra() {
     }
 
     assert_eq!(
-        Test { x: 3 }.how_much_where(),
+        Test { x: 3 }.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test.x :u16.value] => mem::size_of::<u16>(),
@@ -307,7 +307,7 @@ fn test_with_constructor() {
     let x = 3;
 
     assert_eq!(
-        Test { x: &x }.how_much_where(),
+        Test { x: &x }.how_much_where(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test.x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
@@ -328,7 +328,7 @@ fn test_with_statically_known() {
     }
 
     assert_eq!(
-        Test::how_much_where_static(),
+        Test::how_much_where_static(&()),
         CollectionResult {
             root: hash_map! {
                 path![:Test._x :(Follow<u8, UniqueFollow>)+overhead.inline_overhead] => mem::size_of::<&u8>(),
